@@ -1,5 +1,8 @@
 import type { Config } from './config.js';
 
+/** Path prefix for Collectives v1 endpoints, appended after `/ocs/v2.php`. */
+export const COLLECTIVES_API = '/apps/collectives/api/v1.0';
+
 /** A failed HTTP response (non-2xx status). */
 export class HttpError extends Error {
   constructor(
@@ -40,8 +43,8 @@ export class NextcloudClient {
   }
 
   /**
-   * Call an OCS API endpoint relative to the Collectives app
-   * (e.g. `/collectives` resolves to `/ocs/v2.php/apps/collectives/api/v1.0/collectives`).
+   * Call any OCS endpoint. `path` is appended after `/ocs/v2.php` and must start with `/`
+   * (e.g. `/apps/collectives/api/v1.0/collectives` or `/search/providers/foo/search`).
    * Returns the unwrapped `ocs.data` payload.
    */
   async ocs<T = unknown>(
@@ -49,7 +52,7 @@ export class NextcloudClient {
     path: string,
     body?: unknown,
   ): Promise<T> {
-    const url = `${this.config.url}/ocs/v2.php/apps/collectives/api/v1.0${path}`;
+    const url = `${this.config.url}/ocs/v2.php${path}`;
     const headers: Record<string, string> = {
       Authorization: this.authHeader,
       Accept: 'application/json',
@@ -81,8 +84,9 @@ export class NextcloudClient {
   }
 
   /**
-   * Call a WebDAV endpoint under the user's Files area
-   * (path is appended to `/remote.php/dav/files/{user}` and is expected to start with `/`).
+   * Call a WebDAV endpoint under the user's Files area. `path` is appended to
+   * `/remote.php/dav/files/{user}` and must start with `/`. Path segments should
+   * be passed already URL-encoded (use {@link encodeWebDavPath}).
    * Returns the raw `Response` for callers that need headers or streaming bodies.
    */
   async webdav(
@@ -107,4 +111,20 @@ export class NextcloudClient {
     }
     return res;
   }
+}
+
+/**
+ * Build a WebDAV path by encoding each segment. Empty segments are dropped,
+ * and any embedded `/` inside a segment is split and encoded per-piece.
+ *
+ * Example: `encodeWebDavPath('.Collectives/Wiki', 'Vibe Coding', 'Readme.md')`
+ *          → `/.Collectives/Wiki/Vibe%20Coding/Readme.md`
+ */
+export function encodeWebDavPath(...segments: string[]): string {
+  const parts = segments
+    .filter((s) => s != null && s !== '')
+    .flatMap((s) => s.split('/'))
+    .filter((s) => s !== '')
+    .map(encodeURIComponent);
+  return '/' + parts.join('/');
 }
