@@ -2,13 +2,24 @@ import { z, type ZodTypeAny } from 'zod';
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js';
 
 import {
+  copyPage,
   createCollective,
+  createPage,
   deleteCollective,
+  deletePage,
+  favoritePage,
   getPage,
   listCollectives,
   listPages,
+  listTags,
+  movePage,
+  renamePage,
   searchPages,
+  setPageEmoji,
+  setPageTags,
+  unfavoritePage,
   updateCollective,
+  updatePage,
 } from './api.js';
 import { HttpError, OcsError, type NextcloudClient } from './http.js';
 
@@ -263,6 +274,318 @@ const searchTool: ToolDef<typeof SearchArgs> = {
 };
 
 // -----------------------------------------------------------------------------
+// Page write tools
+// -----------------------------------------------------------------------------
+
+const CreatePageArgs = z
+  .object({
+    collectiveId: z.number().int().positive(),
+    parentPageId: z.number().int().positive(),
+    title: z.string().min(1),
+    body: z.string().optional(),
+    emoji: z.string().optional(),
+  })
+  .strict();
+
+const createPageTool: ToolDef<typeof CreatePageArgs> = {
+  argsSchema: CreatePageArgs,
+  tool: {
+    name: 'create_page',
+    description:
+      'Create a new page under a parent. If the parent is a leaf page, it is automatically promoted to a folder so it can hold children. Refuses to overwrite a sibling with the same title.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        parentPageId: {
+          type: 'integer',
+          description: 'Parent page id. To create at the root, pass the Landing page id.',
+        },
+        title: { type: 'string', description: 'Page title; becomes the filename.' },
+        body: { type: 'string', description: 'Markdown body. Optional.' },
+        emoji: { type: 'string', description: 'Optional single emoji to set as the icon.' },
+      },
+      required: ['collectiveId', 'parentPageId', 'title'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) => jsonResult(await createPage(ctx.client, args)),
+};
+
+const UpdatePageArgs = z
+  .object({
+    collectiveId: z.number().int().positive(),
+    pageId: z.number().int().positive(),
+    body: z.string(),
+    mode: z.enum(['replace', 'append', 'prepend']).optional(),
+  })
+  .strict();
+
+const updatePageTool: ToolDef<typeof UpdatePageArgs> = {
+  argsSchema: UpdatePageArgs,
+  tool: {
+    name: 'update_page',
+    description:
+      'Replace, append to, or prepend to a page\'s markdown body. Mode defaults to "replace".',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        pageId: { type: 'integer' },
+        body: { type: 'string' },
+        mode: { type: 'string', enum: ['replace', 'append', 'prepend'] },
+      },
+      required: ['collectiveId', 'pageId', 'body'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(await updatePage(ctx.client, args.collectiveId, args.pageId, args.body, args.mode)),
+};
+
+const DeletePageArgs = z
+  .object({
+    collectiveId: z.number().int().positive(),
+    pageId: z.number().int().positive(),
+  })
+  .strict();
+
+const deletePageTool: ToolDef<typeof DeletePageArgs> = {
+  argsSchema: DeletePageArgs,
+  tool: {
+    name: 'delete_page',
+    description:
+      'Trash a page (recoverable from the Nextcloud Files trash). Folder pages take their entire subtree with them. The Landing page cannot be deleted — delete the collective itself instead.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        pageId: { type: 'integer' },
+      },
+      required: ['collectiveId', 'pageId'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) => {
+    await deletePage(ctx.client, args.collectiveId, args.pageId);
+    return textResult(`Page ${args.pageId} moved to trash.`);
+  },
+};
+
+const RenamePageArgs = z
+  .object({
+    collectiveId: z.number().int().positive(),
+    pageId: z.number().int().positive(),
+    newTitle: z.string().min(1),
+  })
+  .strict();
+
+const renamePageTool: ToolDef<typeof RenamePageArgs> = {
+  argsSchema: RenamePageArgs,
+  tool: {
+    name: 'rename_page',
+    description: 'Rename a page within its current parent.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        pageId: { type: 'integer' },
+        newTitle: { type: 'string' },
+      },
+      required: ['collectiveId', 'pageId', 'newTitle'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(await renamePage(ctx.client, args.collectiveId, args.pageId, args.newTitle)),
+};
+
+const MovePageArgs = z
+  .object({
+    collectiveId: z.number().int().positive(),
+    pageId: z.number().int().positive(),
+    newParentPageId: z.number().int().positive(),
+  })
+  .strict();
+
+const movePageTool: ToolDef<typeof MovePageArgs> = {
+  argsSchema: MovePageArgs,
+  tool: {
+    name: 'move_page',
+    description:
+      'Move a page to a new parent within the same collective. If the new parent is a leaf, it is promoted first.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        pageId: { type: 'integer' },
+        newParentPageId: { type: 'integer' },
+      },
+      required: ['collectiveId', 'pageId', 'newParentPageId'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(
+      await movePage(ctx.client, args.collectiveId, args.pageId, args.newParentPageId),
+    ),
+};
+
+const SetPageEmojiArgs = z
+  .object({
+    collectiveId: z.number().int().positive(),
+    pageId: z.number().int().positive(),
+    emoji: z.string(),
+  })
+  .strict();
+
+const setPageEmojiTool: ToolDef<typeof SetPageEmojiArgs> = {
+  argsSchema: SetPageEmojiArgs,
+  tool: {
+    name: 'set_page_emoji',
+    description: 'Set the single-emoji icon on a page. Pass an empty string to clear.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        pageId: { type: 'integer' },
+        emoji: { type: 'string', description: 'A single emoji, or "" to clear.' },
+      },
+      required: ['collectiveId', 'pageId', 'emoji'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(await setPageEmoji(ctx.client, args.collectiveId, args.pageId, args.emoji)),
+};
+
+const CopyPageArgs = z
+  .object({
+    collectiveId: z.number().int().positive(),
+    pageId: z.number().int().positive(),
+    newTitle: z.string().min(1).optional(),
+  })
+  .strict();
+
+const copyPageTool: ToolDef<typeof CopyPageArgs> = {
+  argsSchema: CopyPageArgs,
+  tool: {
+    name: 'copy_page',
+    description:
+      'Duplicate a leaf page under the same parent. Defaults the new title to "<original> (copy)" unless newTitle is provided. Folder pages (those that contain children) cannot be copied.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        pageId: { type: 'integer' },
+        newTitle: { type: 'string', description: 'Title for the copy. Defaults to "<original> (copy)".' },
+      },
+      required: ['collectiveId', 'pageId'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(await copyPage(ctx.client, args.collectiveId, args.pageId, args.newTitle)),
+};
+
+const PageRefArgs = z
+  .object({
+    collectiveId: z.number().int().positive(),
+    pageId: z.number().int().positive(),
+  })
+  .strict();
+
+const favoritePageTool: ToolDef<typeof PageRefArgs> = {
+  argsSchema: PageRefArgs,
+  tool: {
+    name: 'favorite_page',
+    description: 'Mark a page as a favorite for the authenticated user.',
+    inputSchema: {
+      type: 'object',
+      properties: { collectiveId: { type: 'integer' }, pageId: { type: 'integer' } },
+      required: ['collectiveId', 'pageId'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) => {
+    await favoritePage(ctx.client, args.collectiveId, args.pageId);
+    return textResult(`Page ${args.pageId} favorited.`);
+  },
+};
+
+const unfavoritePageTool: ToolDef<typeof PageRefArgs> = {
+  argsSchema: PageRefArgs,
+  tool: {
+    name: 'unfavorite_page',
+    description: 'Remove a page from the authenticated user\'s favorites.',
+    inputSchema: {
+      type: 'object',
+      properties: { collectiveId: { type: 'integer' }, pageId: { type: 'integer' } },
+      required: ['collectiveId', 'pageId'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) => {
+    await unfavoritePage(ctx.client, args.collectiveId, args.pageId);
+    return textResult(`Page ${args.pageId} unfavorited.`);
+  },
+};
+
+const ListTagsArgs = z
+  .object({
+    collectiveId: z.number().int().positive(),
+  })
+  .strict();
+
+const listTagsTool: ToolDef<typeof ListTagsArgs> = {
+  argsSchema: ListTagsArgs,
+  tool: {
+    name: 'list_tags',
+    description: 'List all tags defined for a Collective.',
+    inputSchema: {
+      type: 'object',
+      properties: { collectiveId: { type: 'integer' } },
+      required: ['collectiveId'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) => jsonResult(await listTags(ctx.client, args.collectiveId)),
+};
+
+const SetPageTagsArgs = z
+  .object({
+    collectiveId: z.number().int().positive(),
+    pageId: z.number().int().positive(),
+    tagIds: z.array(z.number().int().nonnegative()),
+  })
+  .strict();
+
+const setPageTagsTool: ToolDef<typeof SetPageTagsArgs> = {
+  argsSchema: SetPageTagsArgs,
+  tool: {
+    name: 'set_page_tags',
+    description:
+      'Replace the tags on a page. Tags must already exist in the Collective; pass tag ids (use list_tags to look them up).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        pageId: { type: 'integer' },
+        tagIds: {
+          type: 'array',
+          items: { type: 'integer' },
+          description: 'Replacement set of tag ids; pass [] to clear all tags.',
+        },
+      },
+      required: ['collectiveId', 'pageId', 'tagIds'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(await setPageTags(ctx.client, args.collectiveId, args.pageId, args.tagIds)),
+};
+
+// -----------------------------------------------------------------------------
 // Registry
 // -----------------------------------------------------------------------------
 
@@ -275,6 +598,17 @@ const REGISTRY = {
   list_pages: listPagesTool,
   get_page: getPageTool,
   search: searchTool,
+  create_page: createPageTool,
+  update_page: updatePageTool,
+  delete_page: deletePageTool,
+  rename_page: renamePageTool,
+  move_page: movePageTool,
+  set_page_emoji: setPageEmojiTool,
+  copy_page: copyPageTool,
+  favorite_page: favoritePageTool,
+  unfavorite_page: unfavoritePageTool,
+  list_tags: listTagsTool,
+  set_page_tags: setPageTagsTool,
 } as const;
 
 export const TOOLS: Tool[] = Object.values(REGISTRY).map((t) => t.tool);
