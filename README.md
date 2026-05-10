@@ -2,13 +2,13 @@
 
 A [Model Context Protocol](https://modelcontextprotocol.io) server for [Nextcloud Collectives](https://github.com/nextcloud/collectives) — exposes collectives, pages, tags, attachments, page history, and trash to Claude and any MCP-compatible client.
 
-Built to bring the same kind of Claude-driven docs workflow to Collectives that the Outline MCP provides for Outline.
+Brings the same kind of LLM-driven docs workflow to Collectives that the Outline MCP provides for Outline.
 
-> **Status:** in active development. See [Task List](https://macecloud.co.uk/apps/collectives/Wiki/Vibe%20Coding/Collectives%20MCP/Task%20List) for current progress and the [Requirements & Features](https://macecloud.co.uk/apps/collectives/Wiki/Vibe%20Coding/Collectives%20MCP) page for design decisions.
+> **Status:** in active development; not yet released.
 
 ## How it works
 
-Collectives doesn't ship a single clean REST API for everything we need, so this server is a thin hybrid:
+Collectives doesn't ship a single clean REST API for everything an MCP needs, so this server is a thin hybrid of two Nextcloud APIs:
 
 | Layer | Used for |
 | --- | --- |
@@ -19,8 +19,6 @@ WebDAV is the escape hatch for any operation where the OCS API is quirky or inco
 
 ## Tools exposed
 
-Roughly grouped — the canonical list lives in the [requirements doc](https://macecloud.co.uk/apps/collectives/Wiki/Vibe%20Coding/Collectives%20MCP):
-
 - **Collectives:** `list_collectives`, `create_collective`, `update_collective`, `delete_collective`
 - **Pages:** `list_pages`, `get_page`, `create_page`, `update_page`, `delete_page`, `rename_page`, `move_page`, `copy_page`, `set_page_emoji`, `set_page_tags`, `list_tags`, `favorite_page`, `unfavorite_page`
 - **Trash & history:** `list_trashed_pages`, `restore_page`, `purge_page`, `list_page_versions`, `restore_page_version`, `list_recent_pages`
@@ -28,18 +26,18 @@ Roughly grouped — the canonical list lives in the [requirements doc](https://m
 
 ## Install
 
-> Not yet published. Once v0.1.0 ships, this section will cover `npx` and Gitea release tarball install.
+> Not yet released. Once tagged, this section will cover install from a release tarball.
 
 ## Configuration
 
-Add to your Claude Code MCP config:
+Add to your MCP client config (Claude Code shown):
 
 ```json
 {
   "mcpServers": {
     "collectives": {
-      "command": "npx",
-      "args": ["-y", "@macebox/collectives-mcp"],
+      "command": "node",
+      "args": ["/path/to/collectives-mcp/dist/index.js"],
       "env": {
         "NEXTCLOUD_URL": "https://your-nextcloud.example.com",
         "NEXTCLOUD_USER": "your-username",
@@ -55,7 +53,7 @@ Add to your Claude Code MCP config:
 ## Development
 
 ```bash
-git clone https://gitea.macecloud.co.uk/macebox/collectives-mcp.git
+git clone <this-repo-url>
 cd collectives-mcp
 pnpm install
 pnpm dev      # stdio MCP server, point `mcp inspector` at it
@@ -67,7 +65,7 @@ Required env vars: `NEXTCLOUD_URL`, `NEXTCLOUD_USER`, `NEXTCLOUD_APP_PASSWORD`. 
 
 ## CI
 
-Continuous integration runs on the Macebox [Woodpecker](https://ci.macecloud.co.uk) instance — see `.woodpecker.yml`. The pipeline runs lint, typecheck, build, and integration tests on every push to `main` and every pull request.
+Continuous integration is configured for [Woodpecker CI](https://woodpecker-ci.org) — see `.woodpecker.yml`. The pipeline runs lint, typecheck, build, and integration tests on every push and pull request.
 
 ## Dependency updates
 
