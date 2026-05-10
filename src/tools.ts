@@ -805,12 +805,15 @@ const uploadAttachmentTool: ToolDef<typeof UploadAttachmentArgs> = {
     },
   },
   handler: async (args, ctx) => {
+    // Decode base64 content for binary types; pass text as-is.
+    const isText = !args.contentType || args.contentType.startsWith('text/');
+    const content = isText ? args.content : Buffer.from(args.content, 'base64');
     const result = await uploadAttachment(
       ctx.client,
       args.collectiveId,
       args.pageId,
       args.filename,
-      args.content,
+      content,
       args.contentType,
     );
     return jsonResult(result);

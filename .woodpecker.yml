@@ -28,3 +28,42 @@ steps:
     commands:
       - corepack enable
       - pnpm build
+
+---
+
+when:
+  - event: tag
+    ref: refs/tags/v*
+
+steps:
+  install:
+    image: node:24-alpine
+    commands:
+      - corepack enable
+      - pnpm install --frozen-lockfile
+
+  build:
+    image: node:24-alpine
+    depends_on: [install]
+    commands:
+      - corepack enable
+      - pnpm build
+
+  pack:
+    image: node:24-alpine
+    depends_on: [build]
+    commands:
+      - corepack enable
+      - pnpm pack
+      - mv collectives-mcp-*.tgz collectives-mcp.tgz
+
+  release:
+    image: woodpeckerci/plugin-gitea-release
+    depends_on: [pack]
+    settings:
+      base_url: https://gitea.macecloud.co.uk
+      api_key:
+        from_secret: gitea_token
+      files:
+        - collectives-mcp.tgz
+      title: ${CI_COMMIT_TAG}

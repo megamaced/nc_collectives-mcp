@@ -18,7 +18,7 @@ const ctx = {
 };
 
 const server = new Server(
-  { name: 'collectives-mcp', version: '0.0.1' },
+  { name: 'collectives-mcp', version: '0.1.0' },
   { capabilities: { tools: {} } },
 );
 
