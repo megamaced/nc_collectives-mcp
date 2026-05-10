@@ -5,11 +5,13 @@ import {
   copyPage,
   createCollective,
   createPage,
+  deleteAttachment,
   deleteCollective,
   deletePage,
   favoritePage,
   getBacklinks,
   getPage,
+  listAttachments,
   listCollectives,
   listPages,
   listPageVersions,
@@ -27,6 +29,7 @@ import {
   unfavoritePage,
   updateCollective,
   updatePage,
+  uploadAttachment,
 } from './api.js';
 import { HttpError, OcsError, type NextcloudClient } from './http.js';
 
@@ -749,6 +752,102 @@ const getBacklinksTool: ToolDef<typeof PageRefArgs> = {
 };
 
 // -----------------------------------------------------------------------------
+// Attachment tools
+// -----------------------------------------------------------------------------
+
+const listAttachmentsTool: ToolDef<typeof PageRefArgs> = {
+  argsSchema: PageRefArgs,
+  tool: {
+    name: 'list_attachments',
+    description:
+      'List attachments for a page. Returns name, size, content type, and the relative markdown path to reference each file.',
+    inputSchema: {
+      type: 'object',
+      properties: { collectiveId: { type: 'integer' }, pageId: { type: 'integer' } },
+      required: ['collectiveId', 'pageId'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(await listAttachments(ctx.client, args.collectiveId, args.pageId)),
+};
+
+const UploadAttachmentArgs = z
+  .object({
+    collectiveId: z.number().int().positive(),
+    pageId: z.number().int().positive(),
+    filename: z.string().min(1),
+    content: z.string(),
+    contentType: z.string().optional(),
+  })
+  .strict();
+
+const uploadAttachmentTool: ToolDef<typeof UploadAttachmentArgs> = {
+  argsSchema: UploadAttachmentArgs,
+  tool: {
+    name: 'upload_attachment',
+    description:
+      'Upload an attachment to a page. Creates the attachment directory if needed. Returns the relative path to use in markdown (e.g. `![alt](.attachments.{pageId}/filename.png)`).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        pageId: { type: 'integer' },
+        filename: { type: 'string', description: 'Filename for the attachment.' },
+        content: {
+          type: 'string',
+          description: 'File content as a UTF-8 string (for text) or base64-encoded string (for binary; set contentType accordingly).',
+        },
+        contentType: { type: 'string', description: 'MIME type (e.g. "image/png", "text/plain"). Defaults to application/octet-stream.' },
+      },
+      required: ['collectiveId', 'pageId', 'filename', 'content'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) => {
+    const result = await uploadAttachment(
+      ctx.client,
+      args.collectiveId,
+      args.pageId,
+      args.filename,
+      args.content,
+      args.contentType,
+    );
+    return jsonResult(result);
+  },
+};
+
+const DeleteAttachmentArgs = z
+  .object({
+    collectiveId: z.number().int().positive(),
+    pageId: z.number().int().positive(),
+    filename: z.string().min(1),
+  })
+  .strict();
+
+const deleteAttachmentTool: ToolDef<typeof DeleteAttachmentArgs> = {
+  argsSchema: DeleteAttachmentArgs,
+  tool: {
+    name: 'delete_attachment',
+    description: 'Delete an attachment from a page.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        pageId: { type: 'integer' },
+        filename: { type: 'string', description: 'Attachment filename to delete.' },
+      },
+      required: ['collectiveId', 'pageId', 'filename'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) => {
+    await deleteAttachment(ctx.client, args.collectiveId, args.pageId, args.filename);
+    return textResult(`Attachment "${args.filename}" deleted from page ${args.pageId}.`);
+  },
+};
+
+// -----------------------------------------------------------------------------
 // Registry
 // -----------------------------------------------------------------------------
 
@@ -779,6 +878,9 @@ const REGISTRY = {
   restore_page_version: restorePageVersionTool,
   list_recent_pages: listRecentPagesTool,
   get_backlinks: getBacklinksTool,
+  list_attachments: listAttachmentsTool,
+  upload_attachment: uploadAttachmentTool,
+  delete_attachment: deleteAttachmentTool,
 } as const;
 
 export const TOOLS: Tool[] = Object.values(REGISTRY).map((t) => t.tool);

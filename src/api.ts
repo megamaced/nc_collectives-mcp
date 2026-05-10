@@ -776,3 +776,168 @@ export async function getBacklinks(
   const pages = await listPages(client, collectiveId);
   return pages.filter((p) => p.linkedPageIds.includes(pageId));
 }
+
+// -----------------------------------------------------------------------------
+// Attachments
+// -----------------------------------------------------------------------------
+
+export interface Attachment {
+  name: string;
+  size: number;
+  contentType: string;
+  lastModified: string;
+  /** Relative markdown reference path: `.attachments.{pageId}/{filename}` */
+  relativePath: string;
+}
+
+/**
+ * Resolve the WebDAV path to the `.attachments.{pageId}/` directory.
+ *
+ * For a **folder page** (fileName === Readme.md) the attachments dir lives
+ * inside the page's own folder:
+ *   `<collectivePath>/<filePath>/.attachments.<pageId>/`
+ *
+ * For a **leaf page** (`Title.md`) the attachments dir lives alongside
+ * the page file in its parent directory:
+ *   `<collectivePath>/<filePath>/.attachments.<pageId>/`
+ *
+ * Both cases resolve identically because `filePath` already points to the
+ * containing directory for leaves (it's the parent's folder path).
+ */
+function attachmentsDirPath(page: Page): string {
+  return encodeWebDavPath(page.collectivePath, page.filePath, `.attachments.${page.id}`);
+}
+
+/**
+ * List attachments for a page. Returns an empty array if no attachments
+ * directory exists yet.
+ */
+export async function listAttachments(
+  client: NextcloudClient,
+  collectiveId: number,
+  pageId: number,
+): Promise<Attachment[]> {
+  const page = await findPageOrThrow(client, collectiveId, pageId);
+  const dirPath = attachmentsDirPath(page);
+
+  let res: Response;
+  try {
+    res = await client.webdav('PROPFIND', `${dirPath}/`, undefined, { Depth: '1' });
+  } catch (err) {
+    if (err instanceof HttpError && err.status === 404) return [];
+    throw err;
+  }
+
+  const xml = await res.text();
+  return parseAttachmentsXml(xml, page.id);
+}
+
+/**
+ * Upload an attachment to a page. Creates the `.attachments.{pageId}/`
+ * directory if it doesn't exist. Returns metadata including the relative
+ * path to reference in markdown.
+ */
+export async function uploadAttachment(
+  client: NextcloudClient,
+  collectiveId: number,
+  pageId: number,
+  filename: string,
+  content: Uint8Array | string,
+  contentType?: string,
+): Promise<Attachment> {
+  const page = await findPageOrThrow(client, collectiveId, pageId);
+  const cleanName = sanitizeAttachmentName(filename);
+  const dirPath = attachmentsDirPath(page);
+
+  // Ensure the directory exists (MKCOL is idempotent-ish; 405 = already exists).
+  try {
+    await client.webdav('MKCOL', `${dirPath}/`);
+  } catch (err) {
+    if (!(err instanceof HttpError && err.status === 405)) throw err;
+  }
+
+  const filePath = `${dirPath}/${encodeURIComponent(cleanName)}`;
+  const headers: Record<string, string> = {};
+  if (contentType) headers['Content-Type'] = contentType;
+
+  await client.webdav('PUT', filePath, typeof content === 'string' ? content : content, headers);
+
+  const size = typeof content === 'string' ? Buffer.byteLength(content, 'utf8') : content.length;
+  return {
+    name: cleanName,
+    size,
+    contentType: contentType ?? 'application/octet-stream',
+    lastModified: new Date().toUTCString(),
+    relativePath: `.attachments.${pageId}/${cleanName}`,
+  };
+}
+
+/** Delete an attachment from a page. */
+export async function deleteAttachment(
+  client: NextcloudClient,
+  collectiveId: number,
+  pageId: number,
+  filename: string,
+): Promise<void> {
+  const page = await findPageOrThrow(client, collectiveId, pageId);
+  const dirPath = attachmentsDirPath(page);
+  const filePath = `${dirPath}/${encodeURIComponent(filename)}`;
+  await client.webdav('DELETE', filePath);
+}
+
+/** Sanitize an attachment filename — strip path separators, control chars. */
+function sanitizeAttachmentName(name: string): string {
+  const cleaned = name
+    .replace(/[/\\:*?"<>|\x00-\x1f]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned || cleaned === '.' || cleaned === '..') {
+    throw new Error(`Invalid attachment filename: "${name}"`);
+  }
+  if (Buffer.byteLength(cleaned, 'utf8') > 255) {
+    throw new Error(`Attachment filename too long: "${cleaned}"`);
+  }
+  return cleaned;
+}
+
+/** Parse a PROPFIND response for the attachments directory. */
+function parseAttachmentsXml(xml: string, pageId: number): Attachment[] {
+  const attachments: Attachment[] = [];
+  const responseRegex = /<d:response>([\s\S]*?)<\/d:response>/g;
+  let match: RegExpExecArray | null;
+  let isFirst = true;
+  while ((match = responseRegex.exec(xml)) !== null) {
+    if (isFirst) {
+      isFirst = false;
+      continue; // Skip the collection entry itself.
+    }
+    const block = match[1]!;
+
+    const hrefMatch = /<d:href>([^<]+)<\/d:href>/.exec(block);
+    if (!hrefMatch?.[1]) continue;
+    const href = decodeURIComponent(hrefMatch[1]);
+    const name = href.split('/').filter(Boolean).pop() ?? '';
+    if (!name) continue;
+
+    // Skip sub-collections (shouldn't exist, but guard).
+    if (/<d:resourcetype>\s*<d:collection/.test(block)) continue;
+
+    const sizeMatch = /<d:getcontentlength>(\d+)<\/d:getcontentlength>/.exec(block);
+    const size = sizeMatch?.[1] ? parseInt(sizeMatch[1], 10) : 0;
+
+    const mimeMatch = /<d:getcontenttype>([^<]+)<\/d:getcontenttype>/.exec(block);
+    const contentType = mimeMatch?.[1] ?? 'application/octet-stream';
+
+    const modMatch = /<d:getlastmodified>([^<]+)<\/d:getlastmodified>/.exec(block);
+    const lastModified = modMatch?.[1] ?? '';
+
+    attachments.push({
+      name,
+      size,
+      contentType,
+      lastModified,
+      relativePath: `.attachments.${pageId}/${name}`,
+    });
+  }
+  return attachments;
+}
