@@ -33,7 +33,6 @@ steps:
 
 when:
   - event: tag
-    ref: refs/tags/v*
 
 steps:
   install:
