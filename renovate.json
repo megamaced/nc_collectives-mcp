@@ -1,0 +1,38 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    ":dependencyDashboard"
+  ],
+  "labels": ["dependencies"],
+  "timezone": "UTC",
+  "schedule": ["before 6am on monday"],
+  "lockFileMaintenance": {
+    "enabled": true
+  },
+  "packageRules": [
+    {
+      "description": "Group all non-major dev-dependency updates into one PR",
+      "matchDepTypes": ["devDependencies"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "dev-dependencies"
+    },
+    {
+      "description": "Track MCP SDK on its own — surface API breakages clearly",
+      "matchPackageNames": ["@modelcontextprotocol/sdk"],
+      "groupName": "mcp-sdk"
+    },
+    {
+      "description": "Auto-merge non-major updates once CI passes",
+      "matchUpdateTypes": ["patch", "minor"],
+      "automerge": true
+    },
+    {
+      "description": "Pin Node Docker image major versions; manual review for new majors",
+      "matchManagers": ["dockerfile", "woodpecker"],
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    }
+  ]
+}
