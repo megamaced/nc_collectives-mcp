@@ -608,3 +608,171 @@ export async function setPageTags(
 
   return findPageOrThrow(client, collectiveId, pageId);
 }
+
+// -----------------------------------------------------------------------------
+// Trash
+// -----------------------------------------------------------------------------
+
+/** List trashed pages for a Collective. */
+export async function listTrashedPages(
+  client: NextcloudClient,
+  collectiveId: number,
+): Promise<Page[]> {
+  const data = await client.ocs<{ pages: Page[] }>(
+    'GET',
+    `${COLLECTIVES_API}/collectives/${collectiveId}/pages/trash`,
+  );
+  return data.pages;
+}
+
+/** Restore a page from the Collective trash. */
+export async function restorePage(
+  client: NextcloudClient,
+  collectiveId: number,
+  pageId: number,
+): Promise<Page> {
+  await client.ocs(
+    'PUT',
+    `${COLLECTIVES_API}/collectives/${collectiveId}/pages/trash/${pageId}`,
+  );
+  return findPageOrThrow(client, collectiveId, pageId);
+}
+
+/**
+ * Permanently delete a trashed page. This is irreversible — the page
+ * content cannot be recovered after this call.
+ */
+export async function purgePage(
+  client: NextcloudClient,
+  collectiveId: number,
+  pageId: number,
+): Promise<void> {
+  await client.ocs(
+    'DELETE',
+    `${COLLECTIVES_API}/collectives/${collectiveId}/pages/trash/${pageId}`,
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Page versions (WebDAV)
+// -----------------------------------------------------------------------------
+
+export interface PageVersion {
+  /** Version identifier (typically a timestamp or etag). */
+  versionId: string;
+  /** Size in bytes. */
+  size: number;
+  /** Last modified date string from the server. */
+  lastModified: string;
+}
+
+/**
+ * List available versions for a page. Uses Nextcloud's WebDAV versions API.
+ * The page's file id is taken from the OCS metadata (the page `id` **is** the
+ * Nextcloud file id in Collectives).
+ */
+export async function listPageVersions(
+  client: NextcloudClient,
+  collectiveId: number,
+  pageId: number,
+): Promise<PageVersion[]> {
+  // Ensure the page exists.
+  await findPageOrThrow(client, collectiveId, pageId);
+
+  // Nextcloud file versions live at /remote.php/dav/versions/{user}/versions/{fileId}
+  const res = await client.webdavVersions('PROPFIND', `/versions/${pageId}`, undefined, {
+    Depth: '1',
+  });
+  const xml = await res.text();
+  return parseVersionsXml(xml);
+}
+
+/**
+ * Restore a specific version of a page by copying it back to the live path.
+ * Uses WebDAV COPY from the versions area to the file's current location.
+ */
+export async function restorePageVersion(
+  client: NextcloudClient,
+  collectiveId: number,
+  pageId: number,
+  versionId: string,
+): Promise<Page> {
+  const page = await findPageOrThrow(client, collectiveId, pageId);
+  const livePath = pageFilePath(page);
+  const liveUrl = client.webdavUrl(livePath);
+
+  await client.webdavVersions('COPY', `/versions/${pageId}/${versionId}`, undefined, {
+    Destination: liveUrl,
+    Overwrite: 'T',
+  });
+
+  return findPageOrThrow(client, collectiveId, pageId);
+}
+
+/** Parse a PROPFIND multistatus XML response for file versions. */
+function parseVersionsXml(xml: string): PageVersion[] {
+  const versions: PageVersion[] = [];
+  // Match each <d:response> block (skip the first one which is the collection itself)
+  const responseRegex = /<d:response>([\s\S]*?)<\/d:response>/g;
+  let match: RegExpExecArray | null;
+  let isFirst = true;
+  while ((match = responseRegex.exec(xml)) !== null) {
+    if (isFirst) {
+      isFirst = false;
+      continue; // Skip the collection entry itself.
+    }
+    const block = match[1]!;
+
+    // Extract href to get the version id (last path segment).
+    const hrefMatch = /<d:href>([^<]+)<\/d:href>/.exec(block);
+    if (!hrefMatch?.[1]) continue;
+    const href = decodeURIComponent(hrefMatch[1]);
+    const versionId = href.split('/').filter(Boolean).pop() ?? '';
+    if (!versionId) continue;
+
+    const sizeMatch = /<d:getcontentlength>(\d+)<\/d:getcontentlength>/.exec(block);
+    const size = sizeMatch?.[1] ? parseInt(sizeMatch[1], 10) : 0;
+
+    const modMatch = /<d:getlastmodified>([^<]+)<\/d:getlastmodified>/.exec(block);
+    const lastModified = modMatch?.[1] ?? '';
+
+    versions.push({ versionId, size, lastModified });
+  }
+  return versions;
+}
+
+// -----------------------------------------------------------------------------
+// Recent pages
+// -----------------------------------------------------------------------------
+
+/**
+ * List recently-modified pages for a Collective, sorted by timestamp descending.
+ * Collectives does not expose a dedicated "recent" endpoint, so this fetches
+ * the full page list and sorts client-side.
+ */
+export async function listRecentPages(
+  client: NextcloudClient,
+  collectiveId: number,
+  limit = 25,
+): Promise<Page[]> {
+  const pages = await listPages(client, collectiveId);
+  return pages.sort((a, b) => b.timestamp - a.timestamp).slice(0, limit);
+}
+
+// -----------------------------------------------------------------------------
+// Backlinks
+// -----------------------------------------------------------------------------
+
+/**
+ * Get backlinks for a page — returns other pages that link to it.
+ * Uses the `linkedPageIds` field on page metadata: scans all pages in
+ * the collective and returns those whose `linkedPageIds` includes the target.
+ */
+export async function getBacklinks(
+  client: NextcloudClient,
+  collectiveId: number,
+  pageId: number,
+): Promise<Page[]> {
+  const pages = await listPages(client, collectiveId);
+  return pages.filter((p) => p.linkedPageIds.includes(pageId));
+}

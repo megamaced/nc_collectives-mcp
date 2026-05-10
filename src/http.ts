@@ -120,6 +120,34 @@ export class NextcloudClient {
     const userSegment = encodeURIComponent(this.config.user);
     return `${this.config.url}/remote.php/dav/files/${userSegment}${path}`;
   }
+
+  /**
+   * Call a WebDAV endpoint under the user's versions area. `path` is appended to
+   * `/remote.php/dav/versions/{user}` and must start with `/`.
+   * Returns the raw `Response`.
+   */
+  async webdavVersions(
+    method: string,
+    path: string,
+    body?: string | Uint8Array,
+    extraHeaders: Record<string, string> = {},
+  ): Promise<Response> {
+    const userSegment = encodeURIComponent(this.config.user);
+    const url = `${this.config.url}/remote.php/dav/versions/${userSegment}${path}`;
+    const res = await fetch(url, {
+      method,
+      headers: {
+        Authorization: this.authHeader,
+        ...extraHeaders,
+      },
+      body,
+    });
+    if (!res.ok && res.status !== 207) {
+      const text = await res.text().catch(() => '');
+      throw new HttpError(res.status, res.statusText, text);
+    }
+    return res;
+  }
 }
 
 /**

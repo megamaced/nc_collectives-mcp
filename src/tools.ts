@@ -8,12 +8,19 @@ import {
   deleteCollective,
   deletePage,
   favoritePage,
+  getBacklinks,
   getPage,
   listCollectives,
   listPages,
+  listPageVersions,
+  listRecentPages,
   listTags,
+  listTrashedPages,
   movePage,
+  purgePage,
   renamePage,
+  restorePage,
+  restorePageVersion,
   searchPages,
   setPageEmoji,
   setPageTags,
@@ -586,6 +593,162 @@ const setPageTagsTool: ToolDef<typeof SetPageTagsArgs> = {
 };
 
 // -----------------------------------------------------------------------------
+// Trash tools
+// -----------------------------------------------------------------------------
+
+const listTrashedPagesTool: ToolDef<typeof ListPagesArgs> = {
+  argsSchema: ListPagesArgs,
+  tool: {
+    name: 'list_trashed_pages',
+    description:
+      'List pages in the trash for a Collective. These can be restored or permanently purged.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer', description: 'Collective id from list_collectives.' },
+      },
+      required: ['collectiveId'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) => jsonResult(await listTrashedPages(ctx.client, args.collectiveId)),
+};
+
+const restorePageTool: ToolDef<typeof PageRefArgs> = {
+  argsSchema: PageRefArgs,
+  tool: {
+    name: 'restore_page',
+    description: 'Restore a trashed page back to its original location.',
+    inputSchema: {
+      type: 'object',
+      properties: { collectiveId: { type: 'integer' }, pageId: { type: 'integer' } },
+      required: ['collectiveId', 'pageId'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(await restorePage(ctx.client, args.collectiveId, args.pageId)),
+};
+
+const purgePageTool: ToolDef<typeof PageRefArgs> = {
+  argsSchema: PageRefArgs,
+  tool: {
+    name: 'purge_page',
+    description:
+      'Permanently delete a trashed page. THIS IS IRREVERSIBLE — the page content cannot be recovered after this call. The page must already be in the trash (use delete_page first).',
+    inputSchema: {
+      type: 'object',
+      properties: { collectiveId: { type: 'integer' }, pageId: { type: 'integer' } },
+      required: ['collectiveId', 'pageId'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) => {
+    await purgePage(ctx.client, args.collectiveId, args.pageId);
+    return textResult(`Page ${args.pageId} permanently deleted. This cannot be undone.`);
+  },
+};
+
+// -----------------------------------------------------------------------------
+// Version tools
+// -----------------------------------------------------------------------------
+
+const listPageVersionsTool: ToolDef<typeof PageRefArgs> = {
+  argsSchema: PageRefArgs,
+  tool: {
+    name: 'list_page_versions',
+    description:
+      'List available versions (revision history) for a page. Returns version ids that can be used with restore_page_version.',
+    inputSchema: {
+      type: 'object',
+      properties: { collectiveId: { type: 'integer' }, pageId: { type: 'integer' } },
+      required: ['collectiveId', 'pageId'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(await listPageVersions(ctx.client, args.collectiveId, args.pageId)),
+};
+
+const RestorePageVersionArgs = z
+  .object({
+    collectiveId: z.number().int().positive(),
+    pageId: z.number().int().positive(),
+    versionId: z.string().min(1),
+  })
+  .strict();
+
+const restorePageVersionTool: ToolDef<typeof RestorePageVersionArgs> = {
+  argsSchema: RestorePageVersionArgs,
+  tool: {
+    name: 'restore_page_version',
+    description:
+      'Restore a specific historical version of a page. The current content is replaced with the selected version (the current version is preserved as a new version entry).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        pageId: { type: 'integer' },
+        versionId: { type: 'string', description: 'Version id from list_page_versions.' },
+      },
+      required: ['collectiveId', 'pageId', 'versionId'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(
+      await restorePageVersion(ctx.client, args.collectiveId, args.pageId, args.versionId),
+    ),
+};
+
+// -----------------------------------------------------------------------------
+// Recent pages & backlinks
+// -----------------------------------------------------------------------------
+
+const ListRecentPagesArgs = z
+  .object({
+    collectiveId: z.number().int().positive(),
+    limit: z.number().int().min(1).max(100).optional(),
+  })
+  .strict();
+
+const listRecentPagesTool: ToolDef<typeof ListRecentPagesArgs> = {
+  argsSchema: ListRecentPagesArgs,
+  tool: {
+    name: 'list_recent_pages',
+    description: 'List recently-modified pages for a Collective, ordered by last edit time.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer', description: 'Collective id from list_collectives.' },
+        limit: { type: 'integer', description: 'Maximum pages to return (default 25, max 100).' },
+      },
+      required: ['collectiveId'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(await listRecentPages(ctx.client, args.collectiveId, args.limit)),
+};
+
+const getBacklinksTool: ToolDef<typeof PageRefArgs> = {
+  argsSchema: PageRefArgs,
+  tool: {
+    name: 'get_backlinks',
+    description:
+      'Find pages that link to the given page. Scans the linkedPageIds field on all pages in the Collective.',
+    inputSchema: {
+      type: 'object',
+      properties: { collectiveId: { type: 'integer' }, pageId: { type: 'integer' } },
+      required: ['collectiveId', 'pageId'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(await getBacklinks(ctx.client, args.collectiveId, args.pageId)),
+};
+
+// -----------------------------------------------------------------------------
 // Registry
 // -----------------------------------------------------------------------------
 
@@ -609,6 +772,13 @@ const REGISTRY = {
   unfavorite_page: unfavoritePageTool,
   list_tags: listTagsTool,
   set_page_tags: setPageTagsTool,
+  list_trashed_pages: listTrashedPagesTool,
+  restore_page: restorePageTool,
+  purge_page: purgePageTool,
+  list_page_versions: listPageVersionsTool,
+  restore_page_version: restorePageVersionTool,
+  list_recent_pages: listRecentPagesTool,
+  get_backlinks: getBacklinksTool,
 } as const;
 
 export const TOOLS: Tool[] = Object.values(REGISTRY).map((t) => t.tool);
