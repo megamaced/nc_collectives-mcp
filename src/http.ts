@@ -95,8 +95,7 @@ export class NextcloudClient {
     body?: string | Uint8Array,
     extraHeaders: Record<string, string> = {},
   ): Promise<Response> {
-    const userSegment = encodeURIComponent(this.config.user);
-    const url = `${this.config.url}/remote.php/dav/files/${userSegment}${path}`;
+    const url = this.webdavUrl(path);
     const res = await fetch(url, {
       method,
       headers: {
@@ -105,11 +104,21 @@ export class NextcloudClient {
       },
       body,
     });
-    if (!res.ok) {
+    // 207 Multi-Status (PROPFIND) and 204 No Content are also success.
+    if (!res.ok && res.status !== 207) {
       const text = await res.text().catch(() => '');
       throw new HttpError(res.status, res.statusText, text);
     }
     return res;
+  }
+
+  /**
+   * Absolute URL for a WebDAV path under the user's Files area. Needed for
+   * the `Destination` header of MOVE / COPY requests, which must be a full URL.
+   */
+  webdavUrl(path: string): string {
+    const userSegment = encodeURIComponent(this.config.user);
+    return `${this.config.url}/remote.php/dav/files/${userSegment}${path}`;
   }
 }
 
