@@ -92,7 +92,7 @@ export class NextcloudClient {
   async webdav(
     method: string,
     path: string,
-    body?: BodyInit,
+    body?: string | Uint8Array,
     extraHeaders: Record<string, string> = {},
   ): Promise<Response> {
     const userSegment = encodeURIComponent(this.config.user);

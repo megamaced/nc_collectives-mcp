@@ -284,7 +284,7 @@ export async function dispatchTool(
   rawArgs: unknown,
   ctx: Context,
 ): Promise<CallToolResult> {
-  const def = (REGISTRY as Record<string, ToolDef<ZodTypeAny>>)[name];
+  const def = (REGISTRY as unknown as Record<string, ToolDef<ZodTypeAny>>)[name];
   if (!def) {
     return errorResult(`Unknown tool: ${name}`);
   }
