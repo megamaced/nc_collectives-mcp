@@ -1,0 +1,30 @@
+when:
+  - event: [push, pull_request]
+
+steps:
+  install:
+    image: node:22-alpine
+    commands:
+      - corepack enable
+      - pnpm install --frozen-lockfile
+
+  lint:
+    image: node:22-alpine
+    depends_on: [install]
+    commands:
+      - corepack enable
+      - pnpm lint
+
+  typecheck:
+    image: node:22-alpine
+    depends_on: [install]
+    commands:
+      - corepack enable
+      - pnpm typecheck
+
+  build:
+    image: node:22-alpine
+    depends_on: [install]
+    commands:
+      - corepack enable
+      - pnpm build
