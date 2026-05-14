@@ -22,12 +22,13 @@ WebDAV is the escape hatch for any operation where the OCS API is quirky or inco
 
 ## Install
 
+Download `collectives-mcp-0.1.0.tgz` from the [latest release](https://github.com/megamaced/nc_collectives-mcp/releases/latest), then:
+
 ```bash
-git clone https://github.com/megamaced/nc_collectives-mcp.git
-cd nc_collectives-mcp
-pnpm install
-pnpm build
+npm install -g ./collectives-mcp-0.1.0.tgz
 ```
+
+This installs the `collectives-mcp` command globally.
 
 ## Configuration
 
@@ -37,8 +38,8 @@ Add to your MCP client config (Claude Code shown):
 {
   "mcpServers": {
     "collectives": {
-      "command": "node",
-      "args": ["/path/to/nc_collectives-mcp/dist/index.js"],
+      "command": "collectives-mcp",
+      "args": [],
       "env": {
         "NEXTCLOUD_URL": "https://your-nextcloud.example.com",
         "NEXTCLOUD_USER": "your-username",
