@@ -13,6 +13,15 @@ export interface Collective {
   shareToken: string | null;
   isPageShare: boolean;
   trashTimestamp: number | null;
+  circleUniqueId?: string;
+  permissions?: number;
+  /** 0 = view, 1 = edit. */
+  pageMode?: number;
+  canLeave?: boolean;
+  userPageOrder?: number;
+  userShowMembers?: boolean;
+  userShowRecentPages?: boolean;
+  userFavoritePages?: number[];
 }
 
 /** A page within a Collective as returned by `GET /collectives/{id}/pages`. */
@@ -43,4 +52,30 @@ export interface Page {
   linkedPageIds: number[];
   lastUserId: string;
   lastUserDisplayName: string;
+}
+
+/** A tag defined within a Collective. */
+export interface CollectiveTag {
+  id: number;
+  collectiveId?: number;
+  name: string;
+  color?: string;
+}
+
+/** An attachment on a page, as returned by the OCS attachments endpoint. */
+export interface PageAttachment {
+  id: number;
+  pageId: number;
+  name: string;
+  filesize: number;
+  mimetype: string;
+  timestamp: number;
+  hasPreview?: boolean;
+}
+
+/** A historical version of a page from the WebDAV versions API. */
+export interface PageVersion {
+  versionId: string;
+  size: number;
+  lastModified: string;
 }

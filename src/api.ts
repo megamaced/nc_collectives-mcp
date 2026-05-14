@@ -1,5 +1,73 @@
 import { COLLECTIVES_API, encodeWebDavPath, HttpError, type NextcloudClient } from './http.js';
-import type { Collective, Page } from './types.js';
+import type { Collective, CollectiveTag, Page, PageAttachment, PageVersion } from './types.js';
+
+// -----------------------------------------------------------------------------
+// Helpers
+// -----------------------------------------------------------------------------
+
+/** Fetch a single page's metadata via the dedicated OCS endpoint. */
+async function getPageMeta(
+  client: NextcloudClient,
+  collectiveId: number,
+  pageId: number,
+): Promise<Page> {
+  const data = await client.ocs<{ page: Page }>(
+    'GET',
+    `${COLLECTIVES_API}/collectives/${collectiveId}/pages/${pageId}`,
+  );
+  return data.page;
+}
+
+/** Full WebDAV path to a page's content file. */
+function pageFilePath(page: Page): string {
+  return encodeWebDavPath(page.collectivePath, page.filePath, page.fileName);
+}
+
+/** WebDAV path to the `.attachments.{pageId}/` directory for a page. */
+function attachmentsDirPath(page: Page): string {
+  return encodeWebDavPath(page.collectivePath, page.filePath, `.attachments.${page.id}`);
+}
+
+// -----------------------------------------------------------------------------
+// Filename sanitisation (kept for attachment filenames)
+// -----------------------------------------------------------------------------
+
+const FORBIDDEN_FILENAME_CHARS = /[/\\:*?"<>|\x00-\x1f]/g;
+const MAX_FILENAME_BYTES = 250;
+
+/**
+ * Convert a page title to a filesystem-safe basename. Strips path separators
+ * and control characters, collapses whitespace, refuses empty or `.`/`..`,
+ * and enforces a 250-byte cap (room for `.md` under the typical 255-byte limit).
+ */
+export function sanitizeTitle(title: string): string {
+  const cleaned = title.replace(FORBIDDEN_FILENAME_CHARS, '-').replace(/\s+/g, ' ').trim();
+  if (!cleaned) {
+    throw new Error('Page title cannot be empty after sanitization');
+  }
+  if (cleaned === '.' || cleaned === '..') {
+    throw new Error(`Invalid page title: "${title}"`);
+  }
+  if (Buffer.byteLength(`${cleaned}.md`, 'utf8') > MAX_FILENAME_BYTES) {
+    throw new Error(`Page title too long; "${cleaned}.md" exceeds ${MAX_FILENAME_BYTES} bytes`);
+  }
+  return cleaned;
+}
+
+/** Sanitize an attachment filename — strip path separators, control chars. */
+function sanitizeAttachmentName(name: string): string {
+  const cleaned = name
+    .replace(/[/\\:*?"<>|\x00-\x1f]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned || cleaned === '.' || cleaned === '..') {
+    throw new Error(`Invalid attachment filename: "${name}"`);
+  }
+  if (Buffer.byteLength(cleaned, 'utf8') > 255) {
+    throw new Error(`Attachment filename too long: "${cleaned}"`);
+  }
+  return cleaned;
+}
 
 // -----------------------------------------------------------------------------
 // Collectives
@@ -33,7 +101,6 @@ export async function createCollective(
 export interface UpdateCollectiveInput {
   name?: string;
   emoji?: string;
-  /** Empty string clears the emoji. */
   editPermissionLevel?: number;
   sharePermissionLevel?: number;
 }
@@ -67,23 +134,50 @@ export async function updateCollective(
   return refreshed;
 }
 
-export interface DeleteCollectiveInput {
-  /** When true, also delete the underlying Nextcloud Team (Circle). Default true. */
-  deleteTeam?: boolean;
-}
-
-/**
- * Soft-delete a Collective (moves it to the Collectives trash, recoverable in
- * the UI). When `deleteTeam` is true the underlying Team is removed as well.
- */
+/** Soft-delete a Collective (moves it to the Collectives trash, recoverable). */
 export async function deleteCollective(
   client: NextcloudClient,
   id: number,
-  input: DeleteCollectiveInput = {},
 ): Promise<void> {
-  const deleteTeam = input.deleteTeam ?? true;
+  await client.ocs('DELETE', `${COLLECTIVES_API}/collectives/${id}`);
+}
+
+// -----------------------------------------------------------------------------
+// Collective trash
+// -----------------------------------------------------------------------------
+
+/** List Collectives that have been soft-deleted. */
+export async function listTrashedCollectives(client: NextcloudClient): Promise<Collective[]> {
+  const data = await client.ocs<{ collectives: Collective[] }>(
+    'GET',
+    `${COLLECTIVES_API}/collectives/trash`,
+  );
+  return data.collectives;
+}
+
+/** Restore a soft-deleted Collective from the trash. */
+export async function restoreTrashedCollective(
+  client: NextcloudClient,
+  id: number,
+): Promise<Collective> {
+  const data = await client.ocs<{ collective: Collective }>(
+    'PATCH',
+    `${COLLECTIVES_API}/collectives/trash/${id}`,
+  );
+  return data.collective;
+}
+
+/**
+ * Permanently delete a Collective from the trash. Irreversible.
+ * When `deleteTeam` is true the underlying Nextcloud Team is removed as well.
+ */
+export async function permanentlyDeleteCollective(
+  client: NextcloudClient,
+  id: number,
+  deleteTeam = false,
+): Promise<void> {
   const query = deleteTeam ? '?circle=true' : '';
-  await client.ocs('DELETE', `${COLLECTIVES_API}/collectives/${id}${query}`);
+  await client.ocs('DELETE', `${COLLECTIVES_API}/collectives/trash/${id}${query}`);
 }
 
 // -----------------------------------------------------------------------------
@@ -102,20 +196,16 @@ export async function listPages(
 }
 
 /**
- * Read the markdown content of a page. Resolves the WebDAV path from the
- * page's metadata (`collectivePath`, `filePath`, `fileName`).
+ * Read the markdown content of a page. Uses the dedicated single-page OCS
+ * endpoint for metadata, then fetches the body via WebDAV.
  */
 export async function getPage(
   client: NextcloudClient,
   collectiveId: number,
   pageId: number,
 ): Promise<{ page: Page; markdown: string }> {
-  const pages = await listPages(client, collectiveId);
-  const page = pages.find((p) => p.id === pageId);
-  if (!page) {
-    throw new Error(`Page ${pageId} not found in collective ${collectiveId}`);
-  }
-  const path = encodeWebDavPath(page.collectivePath, page.filePath, page.fileName);
+  const page = await getPageMeta(client, collectiveId, pageId);
+  const path = pageFilePath(page);
   const res = await client.webdav('GET', path);
   const markdown = await res.text();
   return { page, markdown };
@@ -125,26 +215,19 @@ export async function getPage(
 // Search
 // -----------------------------------------------------------------------------
 
-/**
- * Provider id for Nextcloud unified search. The Collectives app registers
- * `collectives-pages`. This is verified empirically; if the search call
- * returns "provider not found" on a particular Nextcloud version, listing
- * `/ocs/v2.php/search/providers` will reveal the active id.
- */
-export const COLLECTIVES_SEARCH_PROVIDER = 'collectives-pages';
-
 export interface SearchResult {
-  /** Matching page title. */
   title: string;
-  /** Highlight excerpt; varies by Nextcloud version. */
   subline?: string;
-  /** Path to the page in the Collectives UI. */
   resourceUrl?: string;
   icon?: string;
   rounded?: boolean;
   attributes?: Record<string, string>;
 }
 
+/**
+ * Full-text search across all Collectives via the Nextcloud unified search
+ * provider `collectives-pages`.
+ */
 export async function searchPages(
   client: NextcloudClient,
   query: string,
@@ -153,90 +236,28 @@ export async function searchPages(
   const params = new URLSearchParams({ term: query, limit: String(limit) });
   const data = await client.ocs<{ entries: SearchResult[] }>(
     'GET',
-    `/search/providers/${COLLECTIVES_SEARCH_PROVIDER}/search?${params.toString()}`,
+    `/search/providers/collectives-pages/search?${params.toString()}`,
   );
   return data.entries;
 }
 
-// -----------------------------------------------------------------------------
-// Page writes
-// -----------------------------------------------------------------------------
-
-const FORBIDDEN_FILENAME_CHARS = /[/\\:*?"<>|\x00-\x1f]/g;
-const MAX_FILENAME_BYTES = 250;
-
-/**
- * Convert a page title to a filesystem-safe basename. Strips path separators
- * and control characters, collapses whitespace, refuses empty or `.`/`..`,
- * and enforces a 250-byte cap (room for `.md` under the typical 255-byte limit).
- */
-export function sanitizeTitle(title: string): string {
-  const cleaned = title.replace(FORBIDDEN_FILENAME_CHARS, '-').replace(/\s+/g, ' ').trim();
-  if (!cleaned) {
-    throw new Error('Page title cannot be empty after sanitization');
-  }
-  if (cleaned === '.' || cleaned === '..') {
-    throw new Error(`Invalid page title: "${title}"`);
-  }
-  if (Buffer.byteLength(`${cleaned}.md`, 'utf8') > MAX_FILENAME_BYTES) {
-    throw new Error(`Page title too long; "${cleaned}.md" exceeds ${MAX_FILENAME_BYTES} bytes`);
-  }
-  return cleaned;
-}
-
-/** A page is a "folder" iff its file is `Readme.md` (true for the landing page and any page with children). */
-function isFolderPage(page: Page): boolean {
-  return page.fileName === 'Readme.md';
-}
-
-/** Full WebDAV path to the page's content file. */
-function pageFilePath(page: Page): string {
-  return encodeWebDavPath(page.collectivePath, page.filePath, page.fileName);
-}
-
-/** Full WebDAV path to the directory holding a folder page. */
-function folderDirPath(page: Page): string {
-  return encodeWebDavPath(page.collectivePath, page.filePath);
-}
-
-async function findPageOrThrow(
+/** Search for pages by content within a specific Collective. */
+export async function searchPagesInCollective(
   client: NextcloudClient,
   collectiveId: number,
-  pageId: number,
-): Promise<Page> {
-  const pages = await listPages(client, collectiveId);
-  const page = pages.find((p) => p.id === pageId);
-  if (!page) throw new Error(`Page ${pageId} not found in collective ${collectiveId}`);
-  return page;
+  query: string,
+): Promise<Page[]> {
+  const params = new URLSearchParams({ searchString: query });
+  const data = await client.ocs<{ pages: Page[] }>(
+    'GET',
+    `${COLLECTIVES_API}/collectives/${collectiveId}/pages/search?${params.toString()}`,
+  );
+  return data.pages;
 }
 
-/**
- * Promote a leaf page to a folder so it can hold children.
- *
- * Before: `<dir>/<Title>.md`
- * After:  `<dir>/<Title>/Readme.md`
- *
- * The page id is preserved (Nextcloud's fileId stays put across MOVE).
- */
-async function promoteLeafToFolder(
-  client: NextcloudClient,
-  collectiveId: number,
-  page: Page,
-): Promise<Page> {
-  if (isFolderPage(page)) return page;
-
-  const titleNoExt = page.fileName.replace(/\.md$/i, '');
-  const oldPath = encodeWebDavPath(page.collectivePath, page.filePath, page.fileName);
-  const newDir = encodeWebDavPath(page.collectivePath, page.filePath, titleNoExt);
-  const newPath = `${newDir}/Readme.md`;
-
-  await client.webdav('MKCOL', `${newDir}/`);
-  await client.webdav('MOVE', oldPath, undefined, {
-    Destination: client.webdavUrl(newPath),
-  });
-
-  return findPageOrThrow(client, collectiveId, page.id);
-}
+// -----------------------------------------------------------------------------
+// Page writes — using OCS endpoints
+// -----------------------------------------------------------------------------
 
 export interface CreatePageInput {
   collectiveId: number;
@@ -246,49 +267,46 @@ export interface CreatePageInput {
   body?: string;
   /** Optional emoji to set after creation. */
   emoji?: string;
+  /** Template page id to copy initial content from. */
+  templateId?: number;
 }
 
 /**
- * Create a new leaf page. If the parent is currently a leaf, it is first
- * promoted to a folder. Throws if a sibling with the same title already exists.
+ * Create a new page under a parent via the OCS API. The server handles folder
+ * promotion and naming automatically. If `body` is provided, it is written
+ * via WebDAV after creation.
+ *
+ * Per the OpenAPI spec: `POST .../pages/{parentId}` with `{title, templateId?}` in body.
  */
 export async function createPage(
   client: NextcloudClient,
   input: CreatePageInput,
 ): Promise<Page> {
-  const cleanTitle = sanitizeTitle(input.title);
-  let parent = await findPageOrThrow(client, input.collectiveId, input.parentPageId);
+  const ocsBody: Record<string, unknown> = { title: input.title };
+  if (input.templateId !== undefined) ocsBody.templateId = input.templateId;
 
-  if (!isFolderPage(parent)) {
-    parent = await promoteLeafToFolder(client, input.collectiveId, parent);
-  }
-
-  const sibling = (await listPages(client, input.collectiveId)).find(
-    (p) => p.parentId === parent.id && p.title === cleanTitle,
+  const data = await client.ocs<{ page: Page }>(
+    'POST',
+    `${COLLECTIVES_API}/collectives/${input.collectiveId}/pages/${input.parentPageId}`,
+    ocsBody,
   );
-  if (sibling) {
-    throw new Error(`A page titled "${cleanTitle}" already exists under parent ${parent.id}`);
-  }
+  let page = data.page;
 
-  const childPath = encodeWebDavPath(parent.collectivePath, parent.filePath, `${cleanTitle}.md`);
-  await client.webdav('PUT', childPath, input.body ?? '');
-
-  const created = (await listPages(client, input.collectiveId)).find(
-    (p) => p.parentId === parent.id && p.title === cleanTitle,
-  );
-  if (!created) {
-    throw new Error(`Page "${cleanTitle}" was created but Collectives has not yet indexed it`);
+  if (input.body) {
+    const path = pageFilePath(page);
+    await client.webdav('PUT', path, input.body);
   }
 
   if (input.emoji) {
-    return setPageEmoji(client, input.collectiveId, created.id, input.emoji);
+    page = await setPageEmoji(client, input.collectiveId, page.id, input.emoji);
   }
-  return created;
+
+  return page;
 }
 
 export type UpdateMode = 'replace' | 'append' | 'prepend';
 
-/** Overwrite, append to, or prepend to a page's markdown body. */
+/** Overwrite, append to, or prepend to a page's markdown body via WebDAV. */
 export async function updatePage(
   client: NextcloudClient,
   collectiveId: number,
@@ -296,7 +314,7 @@ export async function updatePage(
   body: string,
   mode: UpdateMode = 'replace',
 ): Promise<Page> {
-  const page = await findPageOrThrow(client, collectiveId, pageId);
+  const page = await getPageMeta(client, collectiveId, pageId);
   const path = pageFilePath(page);
 
   let newBody = body;
@@ -311,25 +329,23 @@ export async function updatePage(
     }
   }
   await client.webdav('PUT', path, newBody);
-  return findPageOrThrow(client, collectiveId, pageId);
+  return getPageMeta(client, collectiveId, pageId);
 }
 
 /**
- * Trash a page (recoverable from the Collectives page trash). The Landing
- * page (parentId 0) cannot be deleted — delete the Collective itself
- * instead. A 404 from OCS is treated as idempotent success: the page is
- * already gone.
+ * Trash a page (recoverable from Collectives page trash). The Landing page
+ * (parentId 0) cannot be deleted — delete the Collective itself instead.
+ * A 404 is treated as idempotent success.
+ *
+ * Per the OpenAPI spec: `DELETE .../pages/{id}` — summary "Trash a page".
  */
 export async function deletePage(
   client: NextcloudClient,
   collectiveId: number,
   pageId: number,
 ): Promise<void> {
-  // Resolve metadata first so we can give a useful error if the user tries
-  // to delete the landing page.
-  const pages = await listPages(client, collectiveId);
-  const page = pages.find((p) => p.id === pageId);
-  if (page && page.parentId === 0) {
+  const page = await getPageMeta(client, collectiveId, pageId);
+  if (page.parentId === 0) {
     throw new Error('Cannot delete the Landing page; delete the Collective instead.');
   }
 
@@ -339,105 +355,69 @@ export async function deletePage(
       `${COLLECTIVES_API}/collectives/${collectiveId}/pages/${pageId}`,
     );
   } catch (err) {
-    // Idempotent: if the page is already gone, treat as success.
     if (err instanceof HttpError && err.status === 404) return;
     throw err;
   }
 }
 
-/** Rename a page within its current parent. */
+/**
+ * Rename a page via the OCS page-update endpoint.
+ * Per the OpenAPI spec: `PUT .../pages/{id}` with `{title}` in body.
+ */
 export async function renamePage(
   client: NextcloudClient,
   collectiveId: number,
   pageId: number,
   newTitle: string,
 ): Promise<Page> {
-  const cleanTitle = sanitizeTitle(newTitle);
-  const page = await findPageOrThrow(client, collectiveId, pageId);
-  if (page.parentId === 0) {
-    throw new Error('Cannot rename the Landing page; rename the Collective instead.');
-  }
-
-  if (isFolderPage(page)) {
-    // Folder page: rename the directory containing its Readme.md.
-    const segs = page.filePath.split('/').filter(Boolean);
-    segs[segs.length - 1] = cleanTitle;
-    const oldDir = folderDirPath(page);
-    const newDir = encodeWebDavPath(page.collectivePath, segs.join('/'));
-    await client.webdav('MOVE', oldDir, undefined, {
-      Destination: client.webdavUrl(newDir),
-    });
-  } else {
-    const oldPath = pageFilePath(page);
-    const newPath = encodeWebDavPath(page.collectivePath, page.filePath, `${cleanTitle}.md`);
-    await client.webdav('MOVE', oldPath, undefined, {
-      Destination: client.webdavUrl(newPath),
-    });
-  }
-  return findPageOrThrow(client, collectiveId, pageId);
+  const data = await client.ocs<{ page: Page }>(
+    'PUT',
+    `${COLLECTIVES_API}/collectives/${collectiveId}/pages/${pageId}`,
+    { title: newTitle },
+  );
+  return data.page;
 }
 
-/** Move a page under a different parent within the same collective. */
+/**
+ * Move a page under a different parent via the OCS page-update endpoint.
+ * Per the OpenAPI spec: `PUT .../pages/{id}` with `{parentId}` in body.
+ */
 export async function movePage(
   client: NextcloudClient,
   collectiveId: number,
   pageId: number,
   newParentPageId: number,
 ): Promise<Page> {
-  const page = await findPageOrThrow(client, collectiveId, pageId);
-  if (page.parentId === 0) {
-    throw new Error('Cannot move the Landing page.');
-  }
-  if (page.id === newParentPageId) {
-    throw new Error('Cannot move a page under itself.');
-  }
-  let newParent = await findPageOrThrow(client, collectiveId, newParentPageId);
-  if (!isFolderPage(newParent)) {
-    newParent = await promoteLeafToFolder(client, collectiveId, newParent);
-  }
-
-  if (isFolderPage(page)) {
-    const titleSeg = page.filePath.split('/').filter(Boolean).pop() ?? page.title;
-    const oldDir = folderDirPath(page);
-    const newDirSegs = [newParent.filePath, titleSeg].filter(Boolean).join('/');
-    const newDir = encodeWebDavPath(page.collectivePath, newDirSegs);
-    await client.webdav('MOVE', oldDir, undefined, {
-      Destination: client.webdavUrl(newDir),
-    });
-  } else {
-    const oldPath = pageFilePath(page);
-    const newPath = encodeWebDavPath(page.collectivePath, newParent.filePath, page.fileName);
-    await client.webdav('MOVE', oldPath, undefined, {
-      Destination: client.webdavUrl(newPath),
-    });
-  }
-  return findPageOrThrow(client, collectiveId, pageId);
+  const data = await client.ocs<{ page: Page }>(
+    'PUT',
+    `${COLLECTIVES_API}/collectives/${collectiveId}/pages/${pageId}`,
+    { parentId: newParentPageId },
+  );
+  return data.page;
 }
 
-/** Set a single emoji icon on a page. Pass an empty string to clear. */
+/**
+ * Set a single emoji icon on a page. Pass an empty string to clear.
+ * Per the OpenAPI spec: `PUT .../pages/{id}/emoji`.
+ */
 export async function setPageEmoji(
   client: NextcloudClient,
   collectiveId: number,
   pageId: number,
   emoji: string,
 ): Promise<Page> {
-  await client.ocs(
+  const data = await client.ocs<{ page: Page }>(
     'PUT',
     `${COLLECTIVES_API}/collectives/${collectiveId}/pages/${pageId}/emoji`,
     { emoji },
   );
-  return findPageOrThrow(client, collectiveId, pageId);
+  return data.page;
 }
 
 /**
- * Duplicate a leaf page within the same collective. Implemented via WebDAV
- * COPY because Collectives does not expose a copy endpoint in its OCS API.
- * The new page lands under the same parent as the source with " (copy)"
- * appended to the title; if `newTitle` is provided, that's used instead.
- *
- * Folder-page copies (whole subtrees) are not supported — call this only
- * on leaf pages. Promote / move the result manually if a different parent
- * is desired.
+ * Duplicate a page via the OCS page-update endpoint. Supports both leaf and
+ * folder pages. If `newTitle` is provided, the copy gets that title.
+ * Per the OpenAPI spec: `PUT .../pages/{id}` with `{copy: true}` in body.
  */
 export async function copyPage(
   client: NextcloudClient,
@@ -445,63 +425,19 @@ export async function copyPage(
   pageId: number,
   newTitle?: string,
 ): Promise<Page> {
-  const page = await findPageOrThrow(client, collectiveId, pageId);
-  if (isFolderPage(page)) {
-    throw new Error(
-      'copyPage currently supports only leaf pages — copying a folder page would duplicate its entire subtree which Collectives does not expose via API',
-    );
-  }
-
-  const baseTitle = page.fileName.replace(/\.md$/i, '');
-  const targetTitle = sanitizeTitle(newTitle ?? `${baseTitle} (copy)`);
-
-  // Avoid colliding with an existing sibling.
-  const siblings = (await listPages(client, collectiveId)).filter((p) => p.parentId === page.parentId);
-  if (siblings.some((s) => s.title === targetTitle)) {
-    throw new Error(`A page titled "${targetTitle}" already exists under parent ${page.parentId}`);
-  }
-
-  const oldPath = pageFilePath(page);
-  const newPath = encodeWebDavPath(page.collectivePath, page.filePath, `${targetTitle}.md`);
-  await client.webdav('COPY', oldPath, undefined, {
-    Destination: client.webdavUrl(newPath),
-  });
-
-  const created = (await listPages(client, collectiveId)).find(
-    (p) => p.parentId === page.parentId && p.title === targetTitle,
-  );
-  if (!created) {
-    throw new Error(`Page "${targetTitle}" was copied but Collectives has not yet indexed it`);
-  }
-  return created;
-}
-
-/**
- * Get the current user's favorite page ids for a Collective. Reads the
- * `userFavoritePages` field on the Collective object.
- */
-async function getFavoritePageIds(client: NextcloudClient, collectiveId: number): Promise<number[]> {
-  const collective = (await listCollectives(client)).find((c) => c.id === collectiveId);
-  if (!collective) throw new Error(`Collective ${collectiveId} not found`);
-  // userFavoritePages isn't on the Collective interface — fetch via cast.
-  return ((collective as unknown as { userFavoritePages?: number[] }).userFavoritePages ?? []).slice();
-}
-
-/**
- * Replace the favorites list for a Collective. The OCS endpoint takes a
- * JSON-stringified array (per the openapi spec) — odd but documented.
- */
-async function setFavoritePageIds(
-  client: NextcloudClient,
-  collectiveId: number,
-  pageIds: number[],
-): Promise<void> {
-  await client.ocs(
+  const body: Record<string, unknown> = { copy: true };
+  if (newTitle) body.title = newTitle;
+  const data = await client.ocs<{ page: Page }>(
     'PUT',
-    `${COLLECTIVES_API}/collectives/${collectiveId}/userSettings/favoritePages`,
-    { favoritePages: JSON.stringify(pageIds) },
+    `${COLLECTIVES_API}/collectives/${collectiveId}/pages/${pageId}`,
+    body,
   );
+  return data.page;
 }
+
+// -----------------------------------------------------------------------------
+// Favorites
+// -----------------------------------------------------------------------------
 
 /** Mark a page as a favorite for the current user. */
 export async function favoritePage(
@@ -509,9 +445,15 @@ export async function favoritePage(
   collectiveId: number,
   pageId: number,
 ): Promise<void> {
-  const current = await getFavoritePageIds(client, collectiveId);
+  const collective = (await listCollectives(client)).find((c) => c.id === collectiveId);
+  if (!collective) throw new Error(`Collective ${collectiveId} not found`);
+  const current = (collective.userFavoritePages ?? []).slice();
   if (current.includes(pageId)) return;
-  await setFavoritePageIds(client, collectiveId, [...current, pageId]);
+  await client.ocs(
+    'PUT',
+    `${COLLECTIVES_API}/collectives/${collectiveId}/userSettings/favoritePages`,
+    { favoritePages: JSON.stringify([...current, pageId]) },
+  );
 }
 
 /** Remove a page from the current user's favorites. */
@@ -520,20 +462,20 @@ export async function unfavoritePage(
   collectiveId: number,
   pageId: number,
 ): Promise<void> {
-  const current = await getFavoritePageIds(client, collectiveId);
+  const collective = (await listCollectives(client)).find((c) => c.id === collectiveId);
+  if (!collective) throw new Error(`Collective ${collectiveId} not found`);
+  const current = (collective.userFavoritePages ?? []).slice();
   if (!current.includes(pageId)) return;
-  await setFavoritePageIds(
-    client,
-    collectiveId,
-    current.filter((id) => id !== pageId),
+  await client.ocs(
+    'PUT',
+    `${COLLECTIVES_API}/collectives/${collectiveId}/userSettings/favoritePages`,
+    { favoritePages: JSON.stringify(current.filter((id) => id !== pageId)) },
   );
 }
 
-export interface CollectiveTag {
-  id: number;
-  name: string;
-  color?: string;
-}
+// -----------------------------------------------------------------------------
+// Tags
+// -----------------------------------------------------------------------------
 
 /** List all tags defined for a Collective. */
 export async function listTags(
@@ -547,7 +489,53 @@ export async function listTags(
   return data.tags ?? [];
 }
 
-/** Add a single tag to a page. */
+/** Create a new tag in a Collective. */
+export async function createTag(
+  client: NextcloudClient,
+  collectiveId: number,
+  name: string,
+  color: string,
+): Promise<CollectiveTag> {
+  const data = await client.ocs<{ tag: CollectiveTag }>(
+    'POST',
+    `${COLLECTIVES_API}/collectives/${collectiveId}/tags`,
+    { name, color },
+  );
+  return data.tag;
+}
+
+/** Update a tag's name and color. */
+export async function updateTag(
+  client: NextcloudClient,
+  collectiveId: number,
+  tagId: number,
+  name: string,
+  color: string,
+): Promise<CollectiveTag> {
+  const data = await client.ocs<{ tag: CollectiveTag }>(
+    'PUT',
+    `${COLLECTIVES_API}/collectives/${collectiveId}/tags/${tagId}`,
+    { name, color },
+  );
+  return data.tag;
+}
+
+/** Delete a tag from a Collective. */
+export async function deleteTag(
+  client: NextcloudClient,
+  collectiveId: number,
+  tagId: number,
+): Promise<void> {
+  await client.ocs(
+    'DELETE',
+    `${COLLECTIVES_API}/collectives/${collectiveId}/tags/${tagId}`,
+  );
+}
+
+/**
+ * Add a single tag to a page.
+ * Per the OpenAPI spec: `PUT .../pages/{id}/tags/{tagId}`.
+ */
 export async function addPageTag(
   client: NextcloudClient,
   collectiveId: number,
@@ -574,13 +562,9 @@ export async function removePageTag(
 }
 
 /**
- * Replace the tags on a page with the given set of tag ids. Tags must
- * already exist in the Collective; use {@link listTags} to look them up
- * and create them via the Collectives UI if needed.
- *
- * Implemented as a diff against the page's current tags using the
- * per-tag PUT/DELETE endpoints (Collectives doesn't expose a bulk
- * setter).
+ * Replace the tags on a page with the given set of tag ids. Implemented as
+ * a diff against the page's current tags using the per-tag POST/DELETE
+ * endpoints.
  */
 export async function setPageTags(
   client: NextcloudClient,
@@ -588,7 +572,7 @@ export async function setPageTags(
   pageId: number,
   tagIds: number[],
 ): Promise<Page> {
-  const page = await findPageOrThrow(client, collectiveId, pageId);
+  const page = await getPageMeta(client, collectiveId, pageId);
   const allTags = await listTags(client, collectiveId);
   const nameToId = new Map(allTags.map((t) => [t.name, t.id]));
   const currentTagIds = new Set(
@@ -606,7 +590,7 @@ export async function setPageTags(
     if (!targetTagIds.has(id)) await removePageTag(client, collectiveId, pageId, id);
   }
 
-  return findPageOrThrow(client, collectiveId, pageId);
+  return getPageMeta(client, collectiveId, pageId);
 }
 
 // -----------------------------------------------------------------------------
@@ -625,22 +609,25 @@ export async function listTrashedPages(
   return data.pages;
 }
 
-/** Restore a page from the Collective trash. */
+/**
+ * Restore a page from the Collective trash.
+ * Per the OpenAPI spec: `PATCH .../pages/trash/{id}`.
+ */
 export async function restorePage(
   client: NextcloudClient,
   collectiveId: number,
   pageId: number,
 ): Promise<Page> {
-  await client.ocs(
-    'PUT',
+  const data = await client.ocs<{ page: Page }>(
+    'PATCH',
     `${COLLECTIVES_API}/collectives/${collectiveId}/pages/trash/${pageId}`,
   );
-  return findPageOrThrow(client, collectiveId, pageId);
+  return data.page;
 }
 
 /**
- * Permanently delete a trashed page. This is irreversible — the page
- * content cannot be recovered after this call.
+ * Permanently delete a trashed page. Irreversible — the page content cannot
+ * be recovered after this call.
  */
 export async function purgePage(
   client: NextcloudClient,
@@ -657,29 +644,16 @@ export async function purgePage(
 // Page versions (WebDAV)
 // -----------------------------------------------------------------------------
 
-export interface PageVersion {
-  /** Version identifier (typically a timestamp or etag). */
-  versionId: string;
-  /** Size in bytes. */
-  size: number;
-  /** Last modified date string from the server. */
-  lastModified: string;
-}
-
 /**
  * List available versions for a page. Uses Nextcloud's WebDAV versions API.
- * The page's file id is taken from the OCS metadata (the page `id` **is** the
- * Nextcloud file id in Collectives).
+ * The page `id` is the Nextcloud file id in Collectives.
  */
 export async function listPageVersions(
   client: NextcloudClient,
   collectiveId: number,
   pageId: number,
 ): Promise<PageVersion[]> {
-  // Ensure the page exists.
-  await findPageOrThrow(client, collectiveId, pageId);
-
-  // Nextcloud file versions live at /remote.php/dav/versions/{user}/versions/{fileId}
+  await getPageMeta(client, collectiveId, pageId);
   const res = await client.webdavVersions('PROPFIND', `/versions/${pageId}`, undefined, {
     Depth: '1',
   });
@@ -689,7 +663,7 @@ export async function listPageVersions(
 
 /**
  * Restore a specific version of a page by copying it back to the live path.
- * Uses WebDAV COPY from the versions area to the file's current location.
+ * The `versionId` is URI-encoded to prevent path traversal.
  */
 export async function restorePageVersion(
   client: NextcloudClient,
@@ -697,33 +671,32 @@ export async function restorePageVersion(
   pageId: number,
   versionId: string,
 ): Promise<Page> {
-  const page = await findPageOrThrow(client, collectiveId, pageId);
+  const page = await getPageMeta(client, collectiveId, pageId);
   const livePath = pageFilePath(page);
   const liveUrl = client.webdavUrl(livePath);
+  const safeVersionId = encodeURIComponent(versionId);
 
-  await client.webdavVersions('COPY', `/versions/${pageId}/${versionId}`, undefined, {
+  await client.webdavVersions('COPY', `/versions/${pageId}/${safeVersionId}`, undefined, {
     Destination: liveUrl,
     Overwrite: 'T',
   });
 
-  return findPageOrThrow(client, collectiveId, pageId);
+  return getPageMeta(client, collectiveId, pageId);
 }
 
 /** Parse a PROPFIND multistatus XML response for file versions. */
 function parseVersionsXml(xml: string): PageVersion[] {
   const versions: PageVersion[] = [];
-  // Match each <d:response> block (skip the first one which is the collection itself)
   const responseRegex = /<d:response>([\s\S]*?)<\/d:response>/g;
   let match: RegExpExecArray | null;
   let isFirst = true;
   while ((match = responseRegex.exec(xml)) !== null) {
     if (isFirst) {
       isFirst = false;
-      continue; // Skip the collection entry itself.
+      continue;
     }
     const block = match[1]!;
 
-    // Extract href to get the version id (last path segment).
     const hrefMatch = /<d:href>([^<]+)<\/d:href>/.exec(block);
     if (!hrefMatch?.[1]) continue;
     const href = decodeURIComponent(hrefMatch[1]);
@@ -747,8 +720,7 @@ function parseVersionsXml(xml: string): PageVersion[] {
 
 /**
  * List recently-modified pages for a Collective, sorted by timestamp descending.
- * Collectives does not expose a dedicated "recent" endpoint, so this fetches
- * the full page list and sorts client-side.
+ * Fetches the full page list and sorts client-side.
  */
 export async function listRecentPages(
   client: NextcloudClient,
@@ -764,9 +736,8 @@ export async function listRecentPages(
 // -----------------------------------------------------------------------------
 
 /**
- * Get backlinks for a page — returns other pages that link to it.
- * Uses the `linkedPageIds` field on page metadata: scans all pages in
- * the collective and returns those whose `linkedPageIds` includes the target.
+ * Get backlinks for a page — returns other pages whose `linkedPageIds`
+ * includes the target.
  */
 export async function getBacklinks(
   client: NextcloudClient,
@@ -778,64 +749,26 @@ export async function getBacklinks(
 }
 
 // -----------------------------------------------------------------------------
-// Attachments
+// Attachments — OCS for listing, WebDAV for upload/delete
 // -----------------------------------------------------------------------------
 
-export interface Attachment {
-  name: string;
-  size: number;
-  contentType: string;
-  lastModified: string;
-  /** Relative markdown reference path: `.attachments.{pageId}/{filename}` */
-  relativePath: string;
-}
-
-/**
- * Resolve the WebDAV path to the `.attachments.{pageId}/` directory.
- *
- * For a **folder page** (fileName === Readme.md) the attachments dir lives
- * inside the page's own folder:
- *   `<collectivePath>/<filePath>/.attachments.<pageId>/`
- *
- * For a **leaf page** (`Title.md`) the attachments dir lives alongside
- * the page file in its parent directory:
- *   `<collectivePath>/<filePath>/.attachments.<pageId>/`
- *
- * Both cases resolve identically because `filePath` already points to the
- * containing directory for leaves (it's the parent's folder path).
- */
-function attachmentsDirPath(page: Page): string {
-  return encodeWebDavPath(page.collectivePath, page.filePath, `.attachments.${page.id}`);
-}
-
-/**
- * List attachments for a page. Returns an empty array if no attachments
- * directory exists yet.
- */
+/** List attachments for a page via the OCS API. */
 export async function listAttachments(
   client: NextcloudClient,
   collectiveId: number,
   pageId: number,
-): Promise<Attachment[]> {
-  const page = await findPageOrThrow(client, collectiveId, pageId);
-  const dirPath = attachmentsDirPath(page);
-
-  let res: Response;
-  try {
-    res = await client.webdav('PROPFIND', `${dirPath}/`, undefined, { Depth: '1' });
-  } catch (err) {
-    if (err instanceof HttpError && err.status === 404) return [];
-    throw err;
-  }
-
-  const xml = await res.text();
-  return parseAttachmentsXml(xml, page.id);
+): Promise<PageAttachment[]> {
+  const data = await client.ocs<{ attachments: PageAttachment[] }>(
+    'GET',
+    `${COLLECTIVES_API}/collectives/${collectiveId}/pages/${pageId}/attachments`,
+  );
+  return data.attachments ?? [];
 }
 
 /**
- * Upload an attachment to a page. Creates the `.attachments.{pageId}/`
- * directory if it doesn't exist. Returns metadata including the relative
- * path to reference in markdown.
+ * Upload an attachment to a page via WebDAV. Creates the `.attachments.{pageId}/`
+ * directory if it doesn't exist. Returns metadata from a follow-up OCS list
+ * call (with a fallback if the attachment isn't indexed yet).
  */
 export async function uploadAttachment(
   client: NextcloudClient,
@@ -844,12 +777,12 @@ export async function uploadAttachment(
   filename: string,
   content: Uint8Array | string,
   contentType?: string,
-): Promise<Attachment> {
-  const page = await findPageOrThrow(client, collectiveId, pageId);
+): Promise<PageAttachment> {
+  const page = await getPageMeta(client, collectiveId, pageId);
   const cleanName = sanitizeAttachmentName(filename);
   const dirPath = attachmentsDirPath(page);
 
-  // Ensure the directory exists (MKCOL is idempotent-ish; 405 = already exists).
+  // Ensure directory exists (405 = already exists).
   try {
     await client.webdav('MKCOL', `${dirPath}/`);
   } catch (err) {
@@ -862,82 +795,100 @@ export async function uploadAttachment(
 
   await client.webdav('PUT', filePath, typeof content === 'string' ? content : content, headers);
 
-  const size = typeof content === 'string' ? Buffer.byteLength(content, 'utf8') : content.length;
-  return {
+  // Try to return full metadata from OCS; fall back to a constructed object.
+  const attachments = await listAttachments(client, collectiveId, pageId);
+  return attachments.find((a) => a.name === cleanName) ?? {
+    id: 0,
+    pageId,
     name: cleanName,
-    size,
-    contentType: contentType ?? 'application/octet-stream',
-    lastModified: new Date().toUTCString(),
-    relativePath: `.attachments.${pageId}/${cleanName}`,
+    filesize: typeof content === 'string' ? Buffer.byteLength(content, 'utf8') : content.length,
+    mimetype: contentType ?? 'application/octet-stream',
+    timestamp: Math.floor(Date.now() / 1000),
   };
 }
 
-/** Delete an attachment from a page. */
+/** Delete an attachment from a page via WebDAV. */
 export async function deleteAttachment(
   client: NextcloudClient,
   collectiveId: number,
   pageId: number,
   filename: string,
 ): Promise<void> {
-  const page = await findPageOrThrow(client, collectiveId, pageId);
+  const page = await getPageMeta(client, collectiveId, pageId);
   const dirPath = attachmentsDirPath(page);
   const filePath = `${dirPath}/${encodeURIComponent(filename)}`;
   await client.webdav('DELETE', filePath);
 }
 
-/** Sanitize an attachment filename — strip path separators, control chars. */
-function sanitizeAttachmentName(name: string): string {
-  const cleaned = name
-    .replace(/[/\\:*?"<>|\x00-\x1f]/g, '-')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (!cleaned || cleaned === '.' || cleaned === '..') {
-    throw new Error(`Invalid attachment filename: "${name}"`);
-  }
-  if (Buffer.byteLength(cleaned, 'utf8') > 255) {
-    throw new Error(`Attachment filename too long: "${cleaned}"`);
-  }
-  return cleaned;
+// -----------------------------------------------------------------------------
+// Templates
+// -----------------------------------------------------------------------------
+
+/** List page templates defined for a Collective. */
+export async function listTemplates(
+  client: NextcloudClient,
+  collectiveId: number,
+): Promise<Page[]> {
+  const data = await client.ocs<{ templates: Page[] }>(
+    'GET',
+    `${COLLECTIVES_API}/collectives/${collectiveId}/templates`,
+  );
+  return data.templates;
 }
 
-/** Parse a PROPFIND response for the attachments directory. */
-function parseAttachmentsXml(xml: string, pageId: number): Attachment[] {
-  const attachments: Attachment[] = [];
-  const responseRegex = /<d:response>([\s\S]*?)<\/d:response>/g;
-  let match: RegExpExecArray | null;
-  let isFirst = true;
-  while ((match = responseRegex.exec(xml)) !== null) {
-    if (isFirst) {
-      isFirst = false;
-      continue; // Skip the collection entry itself.
-    }
-    const block = match[1]!;
+/** Create a page template. */
+export async function createTemplate(
+  client: NextcloudClient,
+  collectiveId: number,
+  title: string,
+  parentId: number,
+): Promise<Page> {
+  const data = await client.ocs<{ template: Page }>(
+    'POST',
+    `${COLLECTIVES_API}/collectives/${collectiveId}/templates`,
+    { title, parentId },
+  );
+  return data.template;
+}
 
-    const hrefMatch = /<d:href>([^<]+)<\/d:href>/.exec(block);
-    if (!hrefMatch?.[1]) continue;
-    const href = decodeURIComponent(hrefMatch[1]);
-    const name = href.split('/').filter(Boolean).pop() ?? '';
-    if (!name) continue;
+/** Rename a page template. */
+export async function updateTemplate(
+  client: NextcloudClient,
+  collectiveId: number,
+  templateId: number,
+  title: string,
+): Promise<Page> {
+  const data = await client.ocs<{ template: Page }>(
+    'PUT',
+    `${COLLECTIVES_API}/collectives/${collectiveId}/templates/${templateId}`,
+    { title },
+  );
+  return data.template;
+}
 
-    // Skip sub-collections (shouldn't exist, but guard).
-    if (/<d:resourcetype>\s*<d:collection/.test(block)) continue;
+/** Set or clear the emoji icon on a page template. */
+export async function setTemplateEmoji(
+  client: NextcloudClient,
+  collectiveId: number,
+  templateId: number,
+  emoji: string,
+): Promise<Page> {
+  const data = await client.ocs<{ template: Page }>(
+    'PUT',
+    `${COLLECTIVES_API}/collectives/${collectiveId}/templates/${templateId}/emoji`,
+    { emoji },
+  );
+  return data.template;
+}
 
-    const sizeMatch = /<d:getcontentlength>(\d+)<\/d:getcontentlength>/.exec(block);
-    const size = sizeMatch?.[1] ? parseInt(sizeMatch[1], 10) : 0;
-
-    const mimeMatch = /<d:getcontenttype>([^<]+)<\/d:getcontenttype>/.exec(block);
-    const contentType = mimeMatch?.[1] ?? 'application/octet-stream';
-
-    const modMatch = /<d:getlastmodified>([^<]+)<\/d:getlastmodified>/.exec(block);
-    const lastModified = modMatch?.[1] ?? '';
-
-    attachments.push({
-      name,
-      size,
-      contentType,
-      lastModified,
-      relativePath: `.attachments.${pageId}/${name}`,
-    });
-  }
-  return attachments;
+/** Delete a page template. */
+export async function deleteTemplate(
+  client: NextcloudClient,
+  collectiveId: number,
+  templateId: number,
+): Promise<void> {
+  await client.ocs(
+    'DELETE',
+    `${COLLECTIVES_API}/collectives/${collectiveId}/templates/${templateId}`,
+  );
 }

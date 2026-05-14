@@ -5,9 +5,13 @@ import {
   copyPage,
   createCollective,
   createPage,
+  createTag,
+  createTemplate,
   deleteAttachment,
   deleteCollective,
   deletePage,
+  deleteTag,
+  deleteTemplate,
   favoritePage,
   getBacklinks,
   getPage,
@@ -17,21 +21,30 @@ import {
   listPageVersions,
   listRecentPages,
   listTags,
+  listTemplates,
+  listTrashedCollectives,
   listTrashedPages,
   movePage,
+  permanentlyDeleteCollective,
   purgePage,
   renamePage,
   restorePage,
   restorePageVersion,
+  restoreTrashedCollective,
   searchPages,
+  searchPagesInCollective,
   setPageEmoji,
   setPageTags,
+  setTemplateEmoji,
   unfavoritePage,
   updateCollective,
   updatePage,
+  updateTag,
+  updateTemplate,
   uploadAttachment,
 } from './api.js';
 import { HttpError, OcsError, type NextcloudClient } from './http.js';
+import type { PageAttachment } from './types.js';
 
 interface Context {
   client: NextcloudClient;
@@ -56,8 +69,13 @@ function textResult(text: string): CallToolResult {
   return { content: [{ type: 'text', text }] };
 }
 
+/** Add a markdown-reference `relativePath` to each attachment for convenience. */
+function withRelativePath(att: PageAttachment): PageAttachment & { relativePath: string } {
+  return { ...att, relativePath: `.attachments.${att.pageId}/${att.name}` };
+}
+
 // -----------------------------------------------------------------------------
-// Tool definitions
+// Ping
 // -----------------------------------------------------------------------------
 
 const ping: ToolDef<typeof Empty> = {
@@ -75,6 +93,10 @@ const ping: ToolDef<typeof Empty> = {
     );
   },
 };
+
+// -----------------------------------------------------------------------------
+// Collective tools
+// -----------------------------------------------------------------------------
 
 const listCollectivesTool: ToolDef<typeof Empty> = {
   argsSchema: Empty,
@@ -159,7 +181,6 @@ const updateCollectiveTool: ToolDef<typeof UpdateCollectiveArgs> = {
 const DeleteCollectiveArgs = z
   .object({
     id: z.number().int().positive(),
-    deleteTeam: z.boolean().optional(),
   })
   .strict();
 
@@ -168,25 +189,89 @@ const deleteCollectiveTool: ToolDef<typeof DeleteCollectiveArgs> = {
   tool: {
     name: 'delete_collective',
     description:
-      'Soft-delete a Collective (recoverable from the Collectives trash). By default also deletes the underlying Nextcloud Team — set deleteTeam=false to keep it.',
+      'Soft-delete a Collective (moves it to the Collectives trash, recoverable). Use permanently_delete_collective to remove it permanently and optionally delete the underlying Team.',
     inputSchema: {
       type: 'object',
       properties: {
         id: { type: 'integer' },
-        deleteTeam: {
-          type: 'boolean',
-          description: 'Default true. When false, the Team (Circle) is kept and only the Collective is removed.',
-        },
       },
       required: ['id'],
       additionalProperties: false,
     },
   },
   handler: async (args, ctx) => {
-    await deleteCollective(ctx.client, args.id, { deleteTeam: args.deleteTeam });
-    return textResult(`Collective ${args.id} moved to trash${args.deleteTeam === false ? '' : ' (Team also deleted)'}.`);
+    await deleteCollective(ctx.client, args.id);
+    return textResult(`Collective ${args.id} moved to trash.`);
   },
 };
+
+// -----------------------------------------------------------------------------
+// Collective trash tools
+// -----------------------------------------------------------------------------
+
+const listTrashedCollectivesTool: ToolDef<typeof Empty> = {
+  argsSchema: Empty,
+  tool: {
+    name: 'list_trashed_collectives',
+    description:
+      'List Collectives that have been soft-deleted. These can be restored or permanently deleted.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  handler: async (_args, ctx) => jsonResult(await listTrashedCollectives(ctx.client)),
+};
+
+const RestoreTrashedCollectiveArgs = z
+  .object({ id: z.number().int().positive() })
+  .strict();
+
+const restoreTrashedCollectiveTool: ToolDef<typeof RestoreTrashedCollectiveArgs> = {
+  argsSchema: RestoreTrashedCollectiveArgs,
+  tool: {
+    name: 'restore_trashed_collective',
+    description: 'Restore a soft-deleted Collective from the trash.',
+    inputSchema: {
+      type: 'object',
+      properties: { id: { type: 'integer', description: 'Collective id from list_trashed_collectives.' } },
+      required: ['id'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(await restoreTrashedCollective(ctx.client, args.id)),
+};
+
+const PermanentlyDeleteCollectiveArgs = z
+  .object({
+    id: z.number().int().positive(),
+    deleteTeam: z.boolean().optional(),
+  })
+  .strict();
+
+const permanentlyDeleteCollectiveTool: ToolDef<typeof PermanentlyDeleteCollectiveArgs> = {
+  argsSchema: PermanentlyDeleteCollectiveArgs,
+  tool: {
+    name: 'permanently_delete_collective',
+    description:
+      'Permanently delete a Collective from the trash. THIS IS IRREVERSIBLE. The Collective must already be in the trash (use delete_collective first). Set deleteTeam=true to also remove the underlying Nextcloud Team.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'integer', description: 'Collective id from list_trashed_collectives.' },
+        deleteTeam: { type: 'boolean', description: 'Also delete the underlying Team (Circle). Default false.' },
+      },
+      required: ['id'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) => {
+    await permanentlyDeleteCollective(ctx.client, args.id, args.deleteTeam);
+    return textResult(`Collective ${args.id} permanently deleted. This cannot be undone.`);
+  },
+};
+
+// -----------------------------------------------------------------------------
+// Page tools
+// -----------------------------------------------------------------------------
 
 const ListPagesArgs = z
   .object({
@@ -268,7 +353,7 @@ const searchTool: ToolDef<typeof SearchArgs> = {
   tool: {
     name: 'search',
     description:
-      'Full-text search across all Collectives pages the user can access. Uses the Nextcloud unified search "collectives-pages" provider.',
+      'Full-text search across all Collectives pages the user can access. Uses the Nextcloud unified search provider. For searching within a specific Collective, use search_in_collective instead.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -283,6 +368,33 @@ const searchTool: ToolDef<typeof SearchArgs> = {
     jsonResult(await searchPages(ctx.client, args.query, args.limit)),
 };
 
+const SearchInCollectiveArgs = z
+  .object({
+    collectiveId: z.number().int().positive(),
+    query: z.string().min(1),
+  })
+  .strict();
+
+const searchInCollectiveTool: ToolDef<typeof SearchInCollectiveArgs> = {
+  argsSchema: SearchInCollectiveArgs,
+  tool: {
+    name: 'search_in_collective',
+    description:
+      'Search for pages by content within a specific Collective. Returns matching page metadata.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        query: { type: 'string', description: 'Search text.' },
+      },
+      required: ['collectiveId', 'query'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(await searchPagesInCollective(ctx.client, args.collectiveId, args.query)),
+};
+
 // -----------------------------------------------------------------------------
 // Page write tools
 // -----------------------------------------------------------------------------
@@ -294,6 +406,7 @@ const CreatePageArgs = z
     title: z.string().min(1),
     body: z.string().optional(),
     emoji: z.string().optional(),
+    templateId: z.number().int().positive().optional(),
   })
   .strict();
 
@@ -302,7 +415,7 @@ const createPageTool: ToolDef<typeof CreatePageArgs> = {
   tool: {
     name: 'create_page',
     description:
-      'Create a new page under a parent. If the parent is a leaf page, it is automatically promoted to a folder so it can hold children. Refuses to overwrite a sibling with the same title.',
+      'Create a new page under a parent. If the parent is a leaf page, it is automatically promoted to a folder. Optionally initialise from a template.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -314,6 +427,7 @@ const createPageTool: ToolDef<typeof CreatePageArgs> = {
         title: { type: 'string', description: 'Page title; becomes the filename.' },
         body: { type: 'string', description: 'Markdown body. Optional.' },
         emoji: { type: 'string', description: 'Optional single emoji to set as the icon.' },
+        templateId: { type: 'integer', description: 'Template page id to copy initial content from.' },
       },
       required: ['collectiveId', 'parentPageId', 'title'],
       additionalProperties: false,
@@ -365,7 +479,7 @@ const deletePageTool: ToolDef<typeof DeletePageArgs> = {
   tool: {
     name: 'delete_page',
     description:
-      'Trash a page (recoverable from the Nextcloud Files trash). Folder pages take their entire subtree with them. The Landing page cannot be deleted — delete the collective itself instead.',
+      'Trash a page (recoverable from the Collectives page trash). Folder pages take their entire subtree with them. The Landing page cannot be deleted — delete the collective itself instead.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -482,13 +596,13 @@ const copyPageTool: ToolDef<typeof CopyPageArgs> = {
   tool: {
     name: 'copy_page',
     description:
-      'Duplicate a leaf page under the same parent. Defaults the new title to "<original> (copy)" unless newTitle is provided. Folder pages (those that contain children) cannot be copied.',
+      'Duplicate a page under the same parent. If newTitle is provided, the copy gets that title. Works for both leaf and folder pages.',
     inputSchema: {
       type: 'object',
       properties: {
         collectiveId: { type: 'integer' },
         pageId: { type: 'integer' },
-        newTitle: { type: 'string', description: 'Title for the copy. Defaults to "<original> (copy)".' },
+        newTitle: { type: 'string', description: 'Title for the copy. If omitted, server assigns a default.' },
       },
       required: ['collectiveId', 'pageId'],
       additionalProperties: false,
@@ -541,6 +655,10 @@ const unfavoritePageTool: ToolDef<typeof PageRefArgs> = {
   },
 };
 
+// -----------------------------------------------------------------------------
+// Tag tools
+// -----------------------------------------------------------------------------
+
 const ListTagsArgs = z
   .object({
     collectiveId: z.number().int().positive(),
@@ -560,6 +678,92 @@ const listTagsTool: ToolDef<typeof ListTagsArgs> = {
     },
   },
   handler: async (args, ctx) => jsonResult(await listTags(ctx.client, args.collectiveId)),
+};
+
+const CreateTagArgs = z
+  .object({
+    collectiveId: z.number().int().positive(),
+    name: z.string().min(1),
+    color: z.string().min(1),
+  })
+  .strict();
+
+const createTagTool: ToolDef<typeof CreateTagArgs> = {
+  argsSchema: CreateTagArgs,
+  tool: {
+    name: 'create_tag',
+    description: 'Create a new tag in a Collective. Requires a name and a hex color code (e.g. "#FF0000").',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        name: { type: 'string', description: 'Tag name.' },
+        color: { type: 'string', description: 'Hex color code, e.g. "#FF0000".' },
+      },
+      required: ['collectiveId', 'name', 'color'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(await createTag(ctx.client, args.collectiveId, args.name, args.color)),
+};
+
+const UpdateTagArgs = z
+  .object({
+    collectiveId: z.number().int().positive(),
+    tagId: z.number().int().positive(),
+    name: z.string().min(1),
+    color: z.string().min(1),
+  })
+  .strict();
+
+const updateTagTool: ToolDef<typeof UpdateTagArgs> = {
+  argsSchema: UpdateTagArgs,
+  tool: {
+    name: 'update_tag',
+    description: 'Update a tag\'s name and color.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        tagId: { type: 'integer', description: 'Tag id from list_tags.' },
+        name: { type: 'string' },
+        color: { type: 'string', description: 'Hex color code.' },
+      },
+      required: ['collectiveId', 'tagId', 'name', 'color'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(await updateTag(ctx.client, args.collectiveId, args.tagId, args.name, args.color)),
+};
+
+const DeleteTagArgs = z
+  .object({
+    collectiveId: z.number().int().positive(),
+    tagId: z.number().int().positive(),
+  })
+  .strict();
+
+const deleteTagTool: ToolDef<typeof DeleteTagArgs> = {
+  argsSchema: DeleteTagArgs,
+  tool: {
+    name: 'delete_tag',
+    description: 'Delete a tag from a Collective.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        tagId: { type: 'integer' },
+      },
+      required: ['collectiveId', 'tagId'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) => {
+    await deleteTag(ctx.client, args.collectiveId, args.tagId);
+    return textResult(`Tag ${args.tagId} deleted.`);
+  },
 };
 
 const SetPageTagsArgs = z
@@ -768,8 +972,10 @@ const listAttachmentsTool: ToolDef<typeof PageRefArgs> = {
       additionalProperties: false,
     },
   },
-  handler: async (args, ctx) =>
-    jsonResult(await listAttachments(ctx.client, args.collectiveId, args.pageId)),
+  handler: async (args, ctx) => {
+    const attachments = await listAttachments(ctx.client, args.collectiveId, args.pageId);
+    return jsonResult(attachments.map(withRelativePath));
+  },
 };
 
 const UploadAttachmentArgs = z
@@ -805,7 +1011,6 @@ const uploadAttachmentTool: ToolDef<typeof UploadAttachmentArgs> = {
     },
   },
   handler: async (args, ctx) => {
-    // Decode base64 content for binary types; pass text as-is.
     const isText = !args.contentType || args.contentType.startsWith('text/');
     const content = isText ? args.content : Buffer.from(args.content, 'base64');
     const result = await uploadAttachment(
@@ -816,7 +1021,7 @@ const uploadAttachmentTool: ToolDef<typeof UploadAttachmentArgs> = {
       content,
       args.contentType,
     );
-    return jsonResult(result);
+    return jsonResult(withRelativePath(result));
   },
 };
 
@@ -851,6 +1056,141 @@ const deleteAttachmentTool: ToolDef<typeof DeleteAttachmentArgs> = {
 };
 
 // -----------------------------------------------------------------------------
+// Template tools
+// -----------------------------------------------------------------------------
+
+const ListTemplatesArgs = z
+  .object({ collectiveId: z.number().int().positive() })
+  .strict();
+
+const listTemplatesTool: ToolDef<typeof ListTemplatesArgs> = {
+  argsSchema: ListTemplatesArgs,
+  tool: {
+    name: 'list_templates',
+    description: 'List page templates defined for a Collective.',
+    inputSchema: {
+      type: 'object',
+      properties: { collectiveId: { type: 'integer' } },
+      required: ['collectiveId'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) => jsonResult(await listTemplates(ctx.client, args.collectiveId)),
+};
+
+const CreateTemplateArgs = z
+  .object({
+    collectiveId: z.number().int().positive(),
+    title: z.string().min(1),
+    parentId: z.number().int().positive(),
+  })
+  .strict();
+
+const createTemplateTool: ToolDef<typeof CreateTemplateArgs> = {
+  argsSchema: CreateTemplateArgs,
+  tool: {
+    name: 'create_template',
+    description: 'Create a page template in a Collective.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        title: { type: 'string' },
+        parentId: { type: 'integer', description: 'Parent page id for template hierarchy.' },
+      },
+      required: ['collectiveId', 'title', 'parentId'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(await createTemplate(ctx.client, args.collectiveId, args.title, args.parentId)),
+};
+
+const UpdateTemplateArgs = z
+  .object({
+    collectiveId: z.number().int().positive(),
+    templateId: z.number().int().positive(),
+    title: z.string().min(1),
+  })
+  .strict();
+
+const updateTemplateTool: ToolDef<typeof UpdateTemplateArgs> = {
+  argsSchema: UpdateTemplateArgs,
+  tool: {
+    name: 'update_template',
+    description: 'Rename a page template.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        templateId: { type: 'integer' },
+        title: { type: 'string' },
+      },
+      required: ['collectiveId', 'templateId', 'title'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(await updateTemplate(ctx.client, args.collectiveId, args.templateId, args.title)),
+};
+
+const SetTemplateEmojiArgs = z
+  .object({
+    collectiveId: z.number().int().positive(),
+    templateId: z.number().int().positive(),
+    emoji: z.string(),
+  })
+  .strict();
+
+const setTemplateEmojiTool: ToolDef<typeof SetTemplateEmojiArgs> = {
+  argsSchema: SetTemplateEmojiArgs,
+  tool: {
+    name: 'set_template_emoji',
+    description: 'Set or clear the emoji icon on a page template.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        templateId: { type: 'integer' },
+        emoji: { type: 'string', description: 'A single emoji, or "" to clear.' },
+      },
+      required: ['collectiveId', 'templateId', 'emoji'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(await setTemplateEmoji(ctx.client, args.collectiveId, args.templateId, args.emoji)),
+};
+
+const DeleteTemplateArgs = z
+  .object({
+    collectiveId: z.number().int().positive(),
+    templateId: z.number().int().positive(),
+  })
+  .strict();
+
+const deleteTemplateTool: ToolDef<typeof DeleteTemplateArgs> = {
+  argsSchema: DeleteTemplateArgs,
+  tool: {
+    name: 'delete_template',
+    description: 'Delete a page template.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        templateId: { type: 'integer' },
+      },
+      required: ['collectiveId', 'templateId'],
+      additionalProperties: false,
+    },
+  },
+  handler: async (args, ctx) => {
+    await deleteTemplate(ctx.client, args.collectiveId, args.templateId);
+    return textResult(`Template ${args.templateId} deleted.`);
+  },
+};
+
+// -----------------------------------------------------------------------------
 // Registry
 // -----------------------------------------------------------------------------
 
@@ -860,9 +1200,13 @@ const REGISTRY = {
   create_collective: createCollectiveTool,
   update_collective: updateCollectiveTool,
   delete_collective: deleteCollectiveTool,
+  list_trashed_collectives: listTrashedCollectivesTool,
+  restore_trashed_collective: restoreTrashedCollectiveTool,
+  permanently_delete_collective: permanentlyDeleteCollectiveTool,
   list_pages: listPagesTool,
   get_page: getPageTool,
   search: searchTool,
+  search_in_collective: searchInCollectiveTool,
   create_page: createPageTool,
   update_page: updatePageTool,
   delete_page: deletePageTool,
@@ -873,6 +1217,9 @@ const REGISTRY = {
   favorite_page: favoritePageTool,
   unfavorite_page: unfavoritePageTool,
   list_tags: listTagsTool,
+  create_tag: createTagTool,
+  update_tag: updateTagTool,
+  delete_tag: deleteTagTool,
   set_page_tags: setPageTagsTool,
   list_trashed_pages: listTrashedPagesTool,
   restore_page: restorePageTool,
@@ -884,6 +1231,11 @@ const REGISTRY = {
   list_attachments: listAttachmentsTool,
   upload_attachment: uploadAttachmentTool,
   delete_attachment: deleteAttachmentTool,
+  list_templates: listTemplatesTool,
+  create_template: createTemplateTool,
+  update_template: updateTemplateTool,
+  set_template_emoji: setTemplateEmojiTool,
+  delete_template: deleteTemplateTool,
 } as const;
 
 export const TOOLS: Tool[] = Object.values(REGISTRY).map((t) => t.tool);

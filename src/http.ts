@@ -46,6 +46,8 @@ function parseRetryAfter(res: Response): number | null {
 // Error classes
 // -----------------------------------------------------------------------------
 
+const ERROR_BODY_MAX = 200;
+
 /** A failed HTTP response (non-2xx status). */
 export class HttpError extends Error {
   /** Human-readable suggestion for how the caller might fix the problem. */
@@ -56,7 +58,7 @@ export class HttpError extends Error {
     public readonly statusText: string,
     body: string,
   ) {
-    const snippet = body.length > 500 ? `${body.slice(0, 500)}…` : body;
+    const snippet = body.length > ERROR_BODY_MAX ? `${body.slice(0, ERROR_BODY_MAX)}…` : body;
     const hint = httpHint(status);
     super(`HTTP ${status} ${statusText}${snippet ? `: ${snippet}` : ''}${hint ? ` [${hint}]` : ''}`);
     this.name = 'HttpError';
@@ -69,7 +71,7 @@ function httpHint(status: number): string {
     case 401: return 'Check NEXTCLOUD_APP_PASSWORD — it may be expired or revoked.';
     case 403: return 'The app-password lacks permission for this operation.';
     case 404: return 'Resource not found — the page/collective may have been deleted or the id is wrong.';
-    case 405: return 'Method not allowed — this OCS endpoint may not support this operation.';
+    case 405: return 'Method not allowed — this endpoint may not support this operation.';
     case 409: return 'Conflict — a resource with that name may already exist.';
     case 423: return 'Locked — the file is locked by another process or user.';
     case 429: return 'Rate-limited — too many requests. Retry later.';
@@ -117,12 +119,63 @@ export class NextcloudClient {
   constructor(private readonly config: Config) {
     const token = Buffer.from(`${config.user}:${config.password}`, 'utf8').toString('base64');
     this.authHeader = `Basic ${token}`;
+    if (config.url.startsWith('http://')) {
+      process.stderr.write(
+        '[collectives-mcp] WARNING: NEXTCLOUD_URL uses http:// — ' +
+          'credentials will be sent in plain text. Use https:// in production.\n',
+      );
+    }
   }
 
+  // ---------------------------------------------------------------------------
+  // Shared retry logic
+  // ---------------------------------------------------------------------------
+
   /**
-   * Call any OCS endpoint. `path` is appended after `/ocs/v2.php` and must start with `/`
-   * (e.g. `/apps/collectives/api/v1.0/collectives` or `/search/providers/foo/search`).
-   * Returns the unwrapped `ocs.data` payload. Retries on 429 / 5xx.
+   * Fetch with automatic retry on 429 / 5xx. Respects `Retry-After` headers.
+   * @param accept207 Treat HTTP 207 Multi-Status as success (needed for WebDAV).
+   */
+  private async fetchWithRetry(
+    url: string,
+    init: RequestInit,
+    label: string,
+    accept207 = false,
+  ): Promise<Response> {
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      if (attempt > 0) {
+        const delay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
+        debug(`Retry ${attempt}/${MAX_RETRIES} for ${label} after ${delay}ms`);
+        await sleep(delay);
+      }
+
+      debug(label);
+      const res = await fetch(url, init);
+      const isSuccess = res.ok || (accept207 && res.status === 207);
+
+      if (!isSuccess) {
+        if (isRetryable(res.status) && attempt < MAX_RETRIES) {
+          const retryDelay = parseRetryAfter(res);
+          if (retryDelay !== null) await sleep(retryDelay);
+          const text = await res.text().catch(() => '');
+          lastError = new HttpError(res.status, res.statusText, text);
+          continue;
+        }
+        const text = await res.text().catch(() => '');
+        throw new HttpError(res.status, res.statusText, text);
+      }
+      return res;
+    }
+    throw lastError ?? new Error('Unexpected retry exhaustion');
+  }
+
+  // ---------------------------------------------------------------------------
+  // OCS
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Call any OCS endpoint. `path` is appended after `/ocs/v2.php` and must
+   * start with `/`. Returns the unwrapped `ocs.data` payload.
    */
   async ocs<T = unknown>(
     method: string,
@@ -137,53 +190,34 @@ export class NextcloudClient {
     };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
 
-    let lastError: Error | undefined;
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      if (attempt > 0) {
-        const delay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
-        debug(`Retry ${attempt}/${MAX_RETRIES} for ${method} ${path} after ${delay}ms`);
-        await sleep(delay);
-      }
+    const res = await this.fetchWithRetry(
+      url,
+      { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined },
+      `${method} ${path}`,
+    );
 
-      debug(`${method} ${path}`);
-      const res = await fetch(url, {
-        method,
-        headers,
-        body: body !== undefined ? JSON.stringify(body) : undefined,
-      });
-      const text = await res.text();
-
-      if (!res.ok) {
-        if (isRetryable(res.status) && attempt < MAX_RETRIES) {
-          const retryDelay = parseRetryAfter(res);
-          if (retryDelay !== null) await sleep(retryDelay);
-          lastError = new HttpError(res.status, res.statusText, text);
-          continue;
-        }
-        throw new HttpError(res.status, res.statusText, text);
-      }
-
-      let parsed: OcsEnvelope<T>;
-      try {
-        parsed = JSON.parse(text) as OcsEnvelope<T>;
-      } catch {
-        throw new Error(`OCS response was not valid JSON (${res.status}): ${text.slice(0, 200)}`);
-      }
-      const meta = parsed.ocs?.meta;
-      if (!meta || meta.status !== 'ok') {
-        throw new OcsError(meta?.statuscode ?? 0, meta?.message ?? 'OCS request failed');
-      }
-      return parsed.ocs.data;
+    const text = await res.text();
+    let parsed: OcsEnvelope<T>;
+    try {
+      parsed = JSON.parse(text) as OcsEnvelope<T>;
+    } catch {
+      throw new Error(`OCS response was not valid JSON (${res.status}): ${text.slice(0, 200)}`);
     }
-    throw lastError ?? new Error('Unexpected retry exhaustion');
+    const meta = parsed.ocs?.meta;
+    if (!meta || meta.status !== 'ok') {
+      throw new OcsError(meta?.statuscode ?? 0, meta?.message ?? 'OCS request failed');
+    }
+    return parsed.ocs.data;
   }
+
+  // ---------------------------------------------------------------------------
+  // WebDAV — user files
+  // ---------------------------------------------------------------------------
 
   /**
    * Call a WebDAV endpoint under the user's Files area. `path` is appended to
-   * `/remote.php/dav/files/{user}` and must start with `/`. Path segments should
-   * be passed already URL-encoded (use {@link encodeWebDavPath}).
-   * Returns the raw `Response` for callers that need headers or streaming bodies.
-   * Retries on 429 / 5xx.
+   * `/remote.php/dav/files/{user}` and must start with `/`. Returns the raw
+   * `Response`.
    */
   async webdav(
     method: string,
@@ -191,40 +225,12 @@ export class NextcloudClient {
     body?: string | Uint8Array,
     extraHeaders: Record<string, string> = {},
   ): Promise<Response> {
-    const url = this.webdavUrl(path);
-
-    let lastError: Error | undefined;
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      if (attempt > 0) {
-        const delay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
-        debug(`Retry ${attempt}/${MAX_RETRIES} for WebDAV ${method} ${path} after ${delay}ms`);
-        await sleep(delay);
-      }
-
-      debug(`WebDAV ${method} ${path}`);
-      const res = await fetch(url, {
-        method,
-        headers: {
-          Authorization: this.authHeader,
-          ...extraHeaders,
-        },
-        body,
-      });
-      // 207 Multi-Status (PROPFIND) and 204 No Content are also success.
-      if (!res.ok && res.status !== 207) {
-        if (isRetryable(res.status) && attempt < MAX_RETRIES) {
-          const retryDelay = parseRetryAfter(res);
-          if (retryDelay !== null) await sleep(retryDelay);
-          const text = await res.text().catch(() => '');
-          lastError = new HttpError(res.status, res.statusText, text);
-          continue;
-        }
-        const text = await res.text().catch(() => '');
-        throw new HttpError(res.status, res.statusText, text);
-      }
-      return res;
-    }
-    throw lastError ?? new Error('Unexpected retry exhaustion');
+    return this.fetchWithRetry(
+      this.webdavUrl(path),
+      { method, headers: { Authorization: this.authHeader, ...extraHeaders }, body },
+      `WebDAV ${method} ${path}`,
+      true,
+    );
   }
 
   /**
@@ -236,10 +242,13 @@ export class NextcloudClient {
     return `${this.config.url}/remote.php/dav/files/${userSegment}${path}`;
   }
 
+  // ---------------------------------------------------------------------------
+  // WebDAV — file versions
+  // ---------------------------------------------------------------------------
+
   /**
-   * Call a WebDAV endpoint under the user's versions area. `path` is appended to
-   * `/remote.php/dav/versions/{user}` and must start with `/`.
-   * Returns the raw `Response`. Retries on 429 / 5xx.
+   * Call a WebDAV endpoint under the user's versions area. `path` is appended
+   * to `/remote.php/dav/versions/{user}` and must start with `/`.
    */
   async webdavVersions(
     method: string,
@@ -249,38 +258,12 @@ export class NextcloudClient {
   ): Promise<Response> {
     const userSegment = encodeURIComponent(this.config.user);
     const url = `${this.config.url}/remote.php/dav/versions/${userSegment}${path}`;
-
-    let lastError: Error | undefined;
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      if (attempt > 0) {
-        const delay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
-        debug(`Retry ${attempt}/${MAX_RETRIES} for Versions ${method} ${path} after ${delay}ms`);
-        await sleep(delay);
-      }
-
-      debug(`Versions ${method} ${path}`);
-      const res = await fetch(url, {
-        method,
-        headers: {
-          Authorization: this.authHeader,
-          ...extraHeaders,
-        },
-        body,
-      });
-      if (!res.ok && res.status !== 207) {
-        if (isRetryable(res.status) && attempt < MAX_RETRIES) {
-          const retryDelay = parseRetryAfter(res);
-          if (retryDelay !== null) await sleep(retryDelay);
-          const text = await res.text().catch(() => '');
-          lastError = new HttpError(res.status, res.statusText, text);
-          continue;
-        }
-        const text = await res.text().catch(() => '');
-        throw new HttpError(res.status, res.statusText, text);
-      }
-      return res;
-    }
-    throw lastError ?? new Error('Unexpected retry exhaustion');
+    return this.fetchWithRetry(
+      url,
+      { method, headers: { Authorization: this.authHeader, ...extraHeaders }, body },
+      `Versions ${method} ${path}`,
+      true,
+    );
   }
 }
 
