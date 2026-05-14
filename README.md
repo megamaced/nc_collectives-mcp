@@ -68,6 +68,10 @@ pnpm build    # tsc -> dist/
 
 Required env vars: `NEXTCLOUD_URL`, `NEXTCLOUD_USER`, `NEXTCLOUD_APP_PASSWORD`. Tests additionally need `MCP_TEST_COLLECTIVE` pointing at a throwaway collective.
 
+## Disclosure
+
+This project was 100% written by AI (Claude), including all source code, tests, CI configuration, and documentation.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
