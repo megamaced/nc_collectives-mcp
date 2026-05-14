@@ -4,28 +4,33 @@ A [Model Context Protocol](https://modelcontextprotocol.io) server for [Nextclou
 
 ## How it works
 
-Collectives doesn't ship a single clean REST API for everything an MCP needs, so this server is a thin hybrid of two Nextcloud APIs:
+The server uses two Nextcloud APIs, verified against the [Collectives OpenAPI spec](https://raw.githubusercontent.com/nextcloud/collectives/main/openapi.json):
 
 | Layer | Used for |
 | --- | --- |
-| OCS API (`/ocs/v2.php/apps/collectives/api/v1.0/...`) | Metadata: collectives, page tree, tags, emoji, trash, recents, page reordering |
-| WebDAV (`/remote.php/dav/files/{user}/.Collectives/...`) | Content read/write, create/delete/move pages, attachments, version history |
+| OCS API (`/ocs/v2.php/apps/collectives/api/v1.0/...`) | All CRUD operations: collectives, pages, tags, attachments, trash, templates, search, favorites |
+| WebDAV (`/remote.php/dav/files/{user}/...`) | Page body read/write (no OCS equivalent), attachment upload, file version history |
 
-WebDAV is the escape hatch for any operation where the OCS API is quirky or incomplete.
+The OCS API handles structured operations and returns typed JSON. WebDAV is used only where OCS has no equivalent — primarily reading and writing page markdown content.
 
-## Tools exposed
+## Tools exposed (41)
 
 - **Collectives:** `list_collectives`, `create_collective`, `update_collective`, `delete_collective`
-- **Pages:** `list_pages`, `get_page`, `create_page`, `update_page`, `delete_page`, `rename_page`, `move_page`, `copy_page`, `set_page_emoji`, `set_page_tags`, `list_tags`, `favorite_page`, `unfavorite_page`
+- **Collective trash:** `list_trashed_collectives`, `restore_trashed_collective`, `permanently_delete_collective`
+- **Pages:** `list_pages`, `get_page`, `create_page`, `update_page`, `delete_page`, `rename_page`, `move_page`, `copy_page`, `set_page_emoji`, `set_page_tags`, `favorite_page`, `unfavorite_page`
+- **Tags:** `list_tags`, `create_tag`, `update_tag`, `delete_tag`
 - **Trash & history:** `list_trashed_pages`, `restore_page`, `purge_page`, `list_page_versions`, `restore_page_version`, `list_recent_pages`
-- **Search & attachments:** `search`, `list_attachments`, `upload_attachment`, `delete_attachment`
+- **Templates:** `list_templates`, `create_template`, `update_template`, `set_template_emoji`, `delete_template`
+- **Search:** `search`, `search_in_collective`
+- **Attachments:** `list_attachments`, `upload_attachment`, `delete_attachment`
+- **Other:** `ping`, `get_backlinks`
 
 ## Install
 
-Download `collectives-mcp-0.1.0.tgz` from the [latest release](https://github.com/megamaced/nc_collectives-mcp/releases/latest), then:
+Download `collectives-mcp-0.2.0.tgz` from the [latest release](https://github.com/megamaced/nc_collectives-mcp/releases/latest), then:
 
 ```bash
-npm install -g ./collectives-mcp-0.1.0.tgz
+npm install -g ./collectives-mcp-0.2.0.tgz
 ```
 
 This installs the `collectives-mcp` command globally.
