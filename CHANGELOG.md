@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.2.1 — Live Testing Fixes
+
+Fixes found during live testing against Nextcloud Collectives 4.4.0 on a real server. All endpoints now verified against the [raw OpenAPI spec](https://raw.githubusercontent.com/nextcloud/collectives/main/openapi.json) endpoint listing.
+
+### Bug Fixes
+
+- **update_collective**: emoji uses `PUT /collectives/{id}` with emoji in body (not a `/emoji` sub-path); removed `name` field (no rename endpoint exists in the spec)
+- **search_in_collective**: path corrected to `GET /collectives/{id}/search` (was `/pages/search`)
+- **templates**: all endpoints corrected to `/pages/templates` prefix (was `/templates`)
+- **create_tag / update_tag**: strip `#` prefix from hex colour codes — the DB column is `varchar(6)`, so `#2d7d46` overflows but `2d7d46` works
+- **attachments relativePath**: pass `pageId` from caller context — the OCS response does not include a `pageId` field
+- **Zod schemas**: use `z.coerce.number()` for all integer args to handle string-to-number coercion from MCP client serialization
+
+---
+
 ## v0.2.0 — API Audit & New Features
 
 Full audit against the [Collectives OpenAPI spec](https://raw.githubusercontent.com/nextcloud/collectives/main/openapi.json), fixing incorrect HTTP methods, migrating page CRUD from WebDAV to OCS, and adding 12 new tools.

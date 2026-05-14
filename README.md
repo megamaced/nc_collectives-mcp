@@ -27,10 +27,10 @@ The OCS API handles structured operations and returns typed JSON. WebDAV is used
 
 ## Install
 
-Download `collectives-mcp-0.2.0.tgz` from the [latest release](https://github.com/megamaced/nc_collectives-mcp/releases/latest), then:
+Download `collectives-mcp-0.2.1.tgz` from the [latest release](https://github.com/megamaced/nc_collectives-mcp/releases/latest), then:
 
 ```bash
-npm install -g ./collectives-mcp-0.2.0.tgz
+npm install -g ./collectives-mcp-0.2.1.tgz
 ```
 
 This installs the `collectives-mcp` command globally.
