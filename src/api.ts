@@ -489,6 +489,11 @@ export async function listTags(
   return data.tags ?? [];
 }
 
+/** Strip leading `#` from a hex colour — the DB column is varchar(6). */
+function normalizeColor(color: string): string {
+  return color.replace(/^#/, '');
+}
+
 /** Create a new tag in a Collective. */
 export async function createTag(
   client: NextcloudClient,
@@ -499,7 +504,7 @@ export async function createTag(
   const data = await client.ocs<{ tag: CollectiveTag }>(
     'POST',
     `${COLLECTIVES_API}/collectives/${collectiveId}/tags`,
-    { name, color },
+    { name, color: normalizeColor(color) },
   );
   return data.tag;
 }
@@ -515,7 +520,7 @@ export async function updateTag(
   const data = await client.ocs<{ tag: CollectiveTag }>(
     'PUT',
     `${COLLECTIVES_API}/collectives/${collectiveId}/tags/${tagId}`,
-    { name, color },
+    { name, color: normalizeColor(color) },
   );
   return data.tag;
 }
