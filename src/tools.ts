@@ -319,6 +319,15 @@ const getPageTool: ToolDef<typeof GetPageArgs> = {
   },
   handler: async (args, ctx) => {
     const { page, markdown } = await getPage(ctx.client, args.collectiveId, args.pageId);
+    // Server returns tag ids on the page; resolve to display names via the
+    // per-collective tag list. An unknown id (newly created tag we haven't
+    // refreshed) falls back to `#<id>` rather than vanishing.
+    let tagLabels: string[] = [];
+    if (page.tags.length > 0) {
+      const allTags = await listTags(ctx.client, args.collectiveId);
+      const idToName = new Map(allTags.map((t) => [t.id, t.name]));
+      tagLabels = page.tags.map((id) => idToName.get(id) ?? `#${id}`);
+    }
     const header = [
       `# ${page.emoji ? page.emoji + ' ' : ''}${page.title}`,
       '',
@@ -327,7 +336,7 @@ const getPageTool: ToolDef<typeof GetPageArgs> = {
       `- path: ${page.collectivePath}/${page.filePath ? page.filePath + '/' : ''}${page.fileName}`,
       `- last edited: ${page.lastUserDisplayName} at ${new Date(page.timestamp * 1000).toISOString()}`,
       `- size: ${page.size} bytes`,
-      page.tags.length ? `- tags: ${page.tags.join(', ')}` : '',
+      tagLabels.length ? `- tags: ${tagLabels.join(', ')}` : '',
       '',
       '---',
       '',

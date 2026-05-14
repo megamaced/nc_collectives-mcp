@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.2.2 — Page tag type fix
+
+The `Page.tags` field is a list of numeric tag ids, not names — the server returns `[1, 3]`, not `["Bird", "Riparian"]`. Because TypeScript types are erased at runtime and there is no runtime schema for the page DTO, this misuse didn't throw but silently corrupted two tag-related code paths.
+
+### Bug Fixes
+
+- **`Page.tags` typed correctly** as `number[]` in `types.ts` so future consumers don't repeat the mistake
+- **`get_page`**: tag line now displays the tag *names* (resolved via `listTags`) instead of the raw numeric ids that `Array.prototype.join` was coercing to strings. Unknown ids fall back to `#<id>` rather than being silently dropped
+- **`set_page_tags`**: tag removal was broken — the diff fed each tag id through a name→id map (so `currentTagIds` was always empty), which meant removals were never issued and adds were spuriously re-issued for tags already on the page. Now diffs id-to-id directly
+
+---
+
 ## v0.2.1 — Live Testing Fixes
 
 Fixes found during live testing against Nextcloud Collectives 4.4.0 on a real server. All endpoints now verified against the [raw OpenAPI spec](https://raw.githubusercontent.com/nextcloud/collectives/main/openapi.json) endpoint listing.

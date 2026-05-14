@@ -34,7 +34,14 @@ export interface Page {
   /** Order of immediate children by page id. Empty for leaf pages. */
   subpageOrder: number[];
   isFullWidth: boolean;
-  tags: string[];
+  /**
+   * Tag IDs attached to the page. The server returns numeric ids here, not
+   * names — resolve to display names via `listTags(collectiveId)` when
+   * rendering. (The interface previously typed this as `string[]`, but
+   * TypeScript erases types at runtime so the field actually held numbers;
+   * any code that compared values to names silently misbehaved.)
+   */
+  tags: number[];
   trashTimestamp: number | null;
   /** Modification timestamp in seconds since epoch. */
   timestamp: number;

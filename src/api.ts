@@ -578,14 +578,11 @@ export async function setPageTags(
   tagIds: number[],
 ): Promise<Page> {
   const page = await getPageMeta(client, collectiveId, pageId);
-  const allTags = await listTags(client, collectiveId);
-  const nameToId = new Map(allTags.map((t) => [t.name, t.id]));
-  const currentTagIds = new Set(
-    (page.tags ?? []).flatMap((name) => {
-      const id = nameToId.get(name);
-      return id !== undefined ? [id] : [];
-    }),
-  );
+  // `page.tags` is already the list of tag ids — diff directly. The previous
+  // implementation looked each entry up in a name→id map (treating tags as
+  // names) and so always saw an empty current set, causing tag removals to
+  // be silently dropped.
+  const currentTagIds = new Set(page.tags ?? []);
   const targetTagIds = new Set(tagIds);
 
   for (const id of targetTagIds) {
