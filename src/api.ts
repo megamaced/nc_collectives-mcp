@@ -99,15 +99,15 @@ export async function createCollective(
 }
 
 export interface UpdateCollectiveInput {
-  name?: string;
   emoji?: string;
   editPermissionLevel?: number;
   sharePermissionLevel?: number;
 }
 
 /**
- * Apply each provided field via its dedicated PUT endpoint and return the
- * refreshed Collective. Fields with no value are skipped.
+ * Update a Collective. Emoji is set via `PUT /collectives/{id}`, while
+ * editLevel and shareLevel have their own dedicated sub-path endpoints.
+ * There is no name-change endpoint in the API.
  */
 export async function updateCollective(
   client: NextcloudClient,
@@ -115,11 +115,8 @@ export async function updateCollective(
   patch: UpdateCollectiveInput,
 ): Promise<Collective> {
   const base = `${COLLECTIVES_API}/collectives/${id}`;
-  if (patch.name !== undefined) {
-    await client.ocs('PUT', `${base}/name`, { name: patch.name });
-  }
   if (patch.emoji !== undefined) {
-    await client.ocs('PUT', `${base}/emoji`, { emoji: patch.emoji });
+    await client.ocs('PUT', base, { emoji: patch.emoji });
   }
   if (patch.editPermissionLevel !== undefined) {
     await client.ocs('PUT', `${base}/editLevel`, { level: patch.editPermissionLevel });
@@ -241,7 +238,10 @@ export async function searchPages(
   return data.entries;
 }
 
-/** Search for pages by content within a specific Collective. */
+/**
+ * Search for pages by content within a specific Collective.
+ * Per the OpenAPI spec: `GET .../collectives/{id}/search?searchString=`.
+ */
 export async function searchPagesInCollective(
   client: NextcloudClient,
   collectiveId: number,
@@ -250,7 +250,7 @@ export async function searchPagesInCollective(
   const params = new URLSearchParams({ searchString: query });
   const data = await client.ocs<{ pages: Page[] }>(
     'GET',
-    `${COLLECTIVES_API}/collectives/${collectiveId}/pages/search?${params.toString()}`,
+    `${COLLECTIVES_API}/collectives/${collectiveId}/search?${params.toString()}`,
   );
   return data.pages;
 }
@@ -831,12 +831,15 @@ export async function listTemplates(
 ): Promise<Page[]> {
   const data = await client.ocs<{ templates: Page[] }>(
     'GET',
-    `${COLLECTIVES_API}/collectives/${collectiveId}/templates`,
+    `${COLLECTIVES_API}/collectives/${collectiveId}/pages/templates`,
   );
   return data.templates;
 }
 
-/** Create a page template. */
+/**
+ * Create a page template.
+ * Per the OpenAPI spec: `POST .../pages/templates/{parentId}` with `{title}` in body.
+ */
 export async function createTemplate(
   client: NextcloudClient,
   collectiveId: number,
@@ -845,8 +848,8 @@ export async function createTemplate(
 ): Promise<Page> {
   const data = await client.ocs<{ template: Page }>(
     'POST',
-    `${COLLECTIVES_API}/collectives/${collectiveId}/templates`,
-    { title, parentId },
+    `${COLLECTIVES_API}/collectives/${collectiveId}/pages/templates/${parentId}`,
+    { title },
   );
   return data.template;
 }
@@ -860,7 +863,7 @@ export async function updateTemplate(
 ): Promise<Page> {
   const data = await client.ocs<{ template: Page }>(
     'PUT',
-    `${COLLECTIVES_API}/collectives/${collectiveId}/templates/${templateId}`,
+    `${COLLECTIVES_API}/collectives/${collectiveId}/pages/templates/${templateId}`,
     { title },
   );
   return data.template;
@@ -875,7 +878,7 @@ export async function setTemplateEmoji(
 ): Promise<Page> {
   const data = await client.ocs<{ template: Page }>(
     'PUT',
-    `${COLLECTIVES_API}/collectives/${collectiveId}/templates/${templateId}/emoji`,
+    `${COLLECTIVES_API}/collectives/${collectiveId}/pages/templates/${templateId}/emoji`,
     { emoji },
   );
   return data.template;
@@ -889,6 +892,6 @@ export async function deleteTemplate(
 ): Promise<void> {
   await client.ocs(
     'DELETE',
-    `${COLLECTIVES_API}/collectives/${collectiveId}/templates/${templateId}`,
+    `${COLLECTIVES_API}/collectives/${collectiveId}/pages/templates/${templateId}`,
   );
 }

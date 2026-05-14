@@ -70,8 +70,8 @@ function textResult(text: string): CallToolResult {
 }
 
 /** Add a markdown-reference `relativePath` to each attachment for convenience. */
-function withRelativePath(att: PageAttachment): PageAttachment & { relativePath: string } {
-  return { ...att, relativePath: `.attachments.${att.pageId}/${att.name}` };
+function withRelativePath(att: PageAttachment, pageId: number): PageAttachment & { relativePath: string } {
+  return { ...att, relativePath: `.attachments.${pageId}/${att.name}` };
 }
 
 // -----------------------------------------------------------------------------
@@ -137,20 +137,18 @@ const createCollectiveTool: ToolDef<typeof CreateCollectiveArgs> = {
 
 const UpdateCollectiveArgs = z
   .object({
-    id: z.number().int().positive(),
-    name: z.string().min(1).optional(),
+    id: z.coerce.number().int().positive(),
     emoji: z.string().optional(),
-    editPermissionLevel: z.number().int().optional(),
-    sharePermissionLevel: z.number().int().optional(),
+    editPermissionLevel: z.coerce.number().int().optional(),
+    sharePermissionLevel: z.coerce.number().int().optional(),
   })
   .strict()
   .refine(
     (a) =>
-      a.name !== undefined ||
       a.emoji !== undefined ||
       a.editPermissionLevel !== undefined ||
       a.sharePermissionLevel !== undefined,
-    { message: 'At least one of name, emoji, editPermissionLevel, sharePermissionLevel must be provided' },
+    { message: 'At least one of emoji, editPermissionLevel, sharePermissionLevel must be provided' },
   );
 
 const updateCollectiveTool: ToolDef<typeof UpdateCollectiveArgs> = {
@@ -158,12 +156,11 @@ const updateCollectiveTool: ToolDef<typeof UpdateCollectiveArgs> = {
   tool: {
     name: 'update_collective',
     description:
-      'Rename a Collective, change its emoji, or adjust edit/share permission levels. Provide the id and any fields to change.',
+      'Change a Collective\'s emoji or adjust edit/share permission levels. Provide the id and any fields to change. Note: collective renaming is not supported by the API.',
     inputSchema: {
       type: 'object',
       properties: {
         id: { type: 'integer', description: 'Collective id from list_collectives.' },
-        name: { type: 'string' },
         emoji: { type: 'string', description: 'Set to empty string to clear.' },
         editPermissionLevel: { type: 'integer' },
         sharePermissionLevel: { type: 'integer' },
@@ -180,7 +177,7 @@ const updateCollectiveTool: ToolDef<typeof UpdateCollectiveArgs> = {
 
 const DeleteCollectiveArgs = z
   .object({
-    id: z.number().int().positive(),
+    id: z.coerce.number().int().positive(),
   })
   .strict();
 
@@ -221,7 +218,7 @@ const listTrashedCollectivesTool: ToolDef<typeof Empty> = {
 };
 
 const RestoreTrashedCollectiveArgs = z
-  .object({ id: z.number().int().positive() })
+  .object({ id: z.coerce.number().int().positive() })
   .strict();
 
 const restoreTrashedCollectiveTool: ToolDef<typeof RestoreTrashedCollectiveArgs> = {
@@ -242,7 +239,7 @@ const restoreTrashedCollectiveTool: ToolDef<typeof RestoreTrashedCollectiveArgs>
 
 const PermanentlyDeleteCollectiveArgs = z
   .object({
-    id: z.number().int().positive(),
+    id: z.coerce.number().int().positive(),
     deleteTeam: z.boolean().optional(),
   })
   .strict();
@@ -275,7 +272,7 @@ const permanentlyDeleteCollectiveTool: ToolDef<typeof PermanentlyDeleteCollectiv
 
 const ListPagesArgs = z
   .object({
-    collectiveId: z.number().int().positive(),
+    collectiveId: z.coerce.number().int().positive(),
   })
   .strict();
 
@@ -299,8 +296,8 @@ const listPagesTool: ToolDef<typeof ListPagesArgs> = {
 
 const GetPageArgs = z
   .object({
-    collectiveId: z.number().int().positive(),
-    pageId: z.number().int().positive(),
+    collectiveId: z.coerce.number().int().positive(),
+    pageId: z.coerce.number().int().positive(),
   })
   .strict();
 
@@ -344,7 +341,7 @@ const getPageTool: ToolDef<typeof GetPageArgs> = {
 const SearchArgs = z
   .object({
     query: z.string().min(1),
-    limit: z.number().int().min(1).max(100).optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
   })
   .strict();
 
@@ -370,7 +367,7 @@ const searchTool: ToolDef<typeof SearchArgs> = {
 
 const SearchInCollectiveArgs = z
   .object({
-    collectiveId: z.number().int().positive(),
+    collectiveId: z.coerce.number().int().positive(),
     query: z.string().min(1),
   })
   .strict();
@@ -401,12 +398,12 @@ const searchInCollectiveTool: ToolDef<typeof SearchInCollectiveArgs> = {
 
 const CreatePageArgs = z
   .object({
-    collectiveId: z.number().int().positive(),
-    parentPageId: z.number().int().positive(),
+    collectiveId: z.coerce.number().int().positive(),
+    parentPageId: z.coerce.number().int().positive(),
     title: z.string().min(1),
     body: z.string().optional(),
     emoji: z.string().optional(),
-    templateId: z.number().int().positive().optional(),
+    templateId: z.coerce.number().int().positive().optional(),
   })
   .strict();
 
@@ -438,8 +435,8 @@ const createPageTool: ToolDef<typeof CreatePageArgs> = {
 
 const UpdatePageArgs = z
   .object({
-    collectiveId: z.number().int().positive(),
-    pageId: z.number().int().positive(),
+    collectiveId: z.coerce.number().int().positive(),
+    pageId: z.coerce.number().int().positive(),
     body: z.string(),
     mode: z.enum(['replace', 'append', 'prepend']).optional(),
   })
@@ -469,8 +466,8 @@ const updatePageTool: ToolDef<typeof UpdatePageArgs> = {
 
 const DeletePageArgs = z
   .object({
-    collectiveId: z.number().int().positive(),
-    pageId: z.number().int().positive(),
+    collectiveId: z.coerce.number().int().positive(),
+    pageId: z.coerce.number().int().positive(),
   })
   .strict();
 
@@ -498,8 +495,8 @@ const deletePageTool: ToolDef<typeof DeletePageArgs> = {
 
 const RenamePageArgs = z
   .object({
-    collectiveId: z.number().int().positive(),
-    pageId: z.number().int().positive(),
+    collectiveId: z.coerce.number().int().positive(),
+    pageId: z.coerce.number().int().positive(),
     newTitle: z.string().min(1),
   })
   .strict();
@@ -526,9 +523,9 @@ const renamePageTool: ToolDef<typeof RenamePageArgs> = {
 
 const MovePageArgs = z
   .object({
-    collectiveId: z.number().int().positive(),
-    pageId: z.number().int().positive(),
-    newParentPageId: z.number().int().positive(),
+    collectiveId: z.coerce.number().int().positive(),
+    pageId: z.coerce.number().int().positive(),
+    newParentPageId: z.coerce.number().int().positive(),
   })
   .strict();
 
@@ -557,8 +554,8 @@ const movePageTool: ToolDef<typeof MovePageArgs> = {
 
 const SetPageEmojiArgs = z
   .object({
-    collectiveId: z.number().int().positive(),
-    pageId: z.number().int().positive(),
+    collectiveId: z.coerce.number().int().positive(),
+    pageId: z.coerce.number().int().positive(),
     emoji: z.string(),
   })
   .strict();
@@ -585,8 +582,8 @@ const setPageEmojiTool: ToolDef<typeof SetPageEmojiArgs> = {
 
 const CopyPageArgs = z
   .object({
-    collectiveId: z.number().int().positive(),
-    pageId: z.number().int().positive(),
+    collectiveId: z.coerce.number().int().positive(),
+    pageId: z.coerce.number().int().positive(),
     newTitle: z.string().min(1).optional(),
   })
   .strict();
@@ -614,8 +611,8 @@ const copyPageTool: ToolDef<typeof CopyPageArgs> = {
 
 const PageRefArgs = z
   .object({
-    collectiveId: z.number().int().positive(),
-    pageId: z.number().int().positive(),
+    collectiveId: z.coerce.number().int().positive(),
+    pageId: z.coerce.number().int().positive(),
   })
   .strict();
 
@@ -661,7 +658,7 @@ const unfavoritePageTool: ToolDef<typeof PageRefArgs> = {
 
 const ListTagsArgs = z
   .object({
-    collectiveId: z.number().int().positive(),
+    collectiveId: z.coerce.number().int().positive(),
   })
   .strict();
 
@@ -682,7 +679,7 @@ const listTagsTool: ToolDef<typeof ListTagsArgs> = {
 
 const CreateTagArgs = z
   .object({
-    collectiveId: z.number().int().positive(),
+    collectiveId: z.coerce.number().int().positive(),
     name: z.string().min(1),
     color: z.string().min(1),
   })
@@ -710,8 +707,8 @@ const createTagTool: ToolDef<typeof CreateTagArgs> = {
 
 const UpdateTagArgs = z
   .object({
-    collectiveId: z.number().int().positive(),
-    tagId: z.number().int().positive(),
+    collectiveId: z.coerce.number().int().positive(),
+    tagId: z.coerce.number().int().positive(),
     name: z.string().min(1),
     color: z.string().min(1),
   })
@@ -740,8 +737,8 @@ const updateTagTool: ToolDef<typeof UpdateTagArgs> = {
 
 const DeleteTagArgs = z
   .object({
-    collectiveId: z.number().int().positive(),
-    tagId: z.number().int().positive(),
+    collectiveId: z.coerce.number().int().positive(),
+    tagId: z.coerce.number().int().positive(),
   })
   .strict();
 
@@ -768,9 +765,9 @@ const deleteTagTool: ToolDef<typeof DeleteTagArgs> = {
 
 const SetPageTagsArgs = z
   .object({
-    collectiveId: z.number().int().positive(),
-    pageId: z.number().int().positive(),
-    tagIds: z.array(z.number().int().nonnegative()),
+    collectiveId: z.coerce.number().int().positive(),
+    pageId: z.coerce.number().int().positive(),
+    tagIds: z.array(z.coerce.number().int().nonnegative()),
   })
   .strict();
 
@@ -879,8 +876,8 @@ const listPageVersionsTool: ToolDef<typeof PageRefArgs> = {
 
 const RestorePageVersionArgs = z
   .object({
-    collectiveId: z.number().int().positive(),
-    pageId: z.number().int().positive(),
+    collectiveId: z.coerce.number().int().positive(),
+    pageId: z.coerce.number().int().positive(),
     versionId: z.string().min(1),
   })
   .strict();
@@ -914,8 +911,8 @@ const restorePageVersionTool: ToolDef<typeof RestorePageVersionArgs> = {
 
 const ListRecentPagesArgs = z
   .object({
-    collectiveId: z.number().int().positive(),
-    limit: z.number().int().min(1).max(100).optional(),
+    collectiveId: z.coerce.number().int().positive(),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
   })
   .strict();
 
@@ -974,14 +971,14 @@ const listAttachmentsTool: ToolDef<typeof PageRefArgs> = {
   },
   handler: async (args, ctx) => {
     const attachments = await listAttachments(ctx.client, args.collectiveId, args.pageId);
-    return jsonResult(attachments.map(withRelativePath));
+    return jsonResult(attachments.map((a) => withRelativePath(a, args.pageId)));
   },
 };
 
 const UploadAttachmentArgs = z
   .object({
-    collectiveId: z.number().int().positive(),
-    pageId: z.number().int().positive(),
+    collectiveId: z.coerce.number().int().positive(),
+    pageId: z.coerce.number().int().positive(),
     filename: z.string().min(1),
     content: z.string(),
     contentType: z.string().optional(),
@@ -1021,14 +1018,14 @@ const uploadAttachmentTool: ToolDef<typeof UploadAttachmentArgs> = {
       content,
       args.contentType,
     );
-    return jsonResult(withRelativePath(result));
+    return jsonResult(withRelativePath(result, args.pageId));
   },
 };
 
 const DeleteAttachmentArgs = z
   .object({
-    collectiveId: z.number().int().positive(),
-    pageId: z.number().int().positive(),
+    collectiveId: z.coerce.number().int().positive(),
+    pageId: z.coerce.number().int().positive(),
     filename: z.string().min(1),
   })
   .strict();
@@ -1060,7 +1057,7 @@ const deleteAttachmentTool: ToolDef<typeof DeleteAttachmentArgs> = {
 // -----------------------------------------------------------------------------
 
 const ListTemplatesArgs = z
-  .object({ collectiveId: z.number().int().positive() })
+  .object({ collectiveId: z.coerce.number().int().positive() })
   .strict();
 
 const listTemplatesTool: ToolDef<typeof ListTemplatesArgs> = {
@@ -1080,9 +1077,9 @@ const listTemplatesTool: ToolDef<typeof ListTemplatesArgs> = {
 
 const CreateTemplateArgs = z
   .object({
-    collectiveId: z.number().int().positive(),
+    collectiveId: z.coerce.number().int().positive(),
     title: z.string().min(1),
-    parentId: z.number().int().positive(),
+    parentId: z.coerce.number().int().positive(),
   })
   .strict();
 
@@ -1108,8 +1105,8 @@ const createTemplateTool: ToolDef<typeof CreateTemplateArgs> = {
 
 const UpdateTemplateArgs = z
   .object({
-    collectiveId: z.number().int().positive(),
-    templateId: z.number().int().positive(),
+    collectiveId: z.coerce.number().int().positive(),
+    templateId: z.coerce.number().int().positive(),
     title: z.string().min(1),
   })
   .strict();
@@ -1136,8 +1133,8 @@ const updateTemplateTool: ToolDef<typeof UpdateTemplateArgs> = {
 
 const SetTemplateEmojiArgs = z
   .object({
-    collectiveId: z.number().int().positive(),
-    templateId: z.number().int().positive(),
+    collectiveId: z.coerce.number().int().positive(),
+    templateId: z.coerce.number().int().positive(),
     emoji: z.string(),
   })
   .strict();
@@ -1164,8 +1161,8 @@ const setTemplateEmojiTool: ToolDef<typeof SetTemplateEmojiArgs> = {
 
 const DeleteTemplateArgs = z
   .object({
-    collectiveId: z.number().int().positive(),
-    templateId: z.number().int().positive(),
+    collectiveId: z.coerce.number().int().positive(),
+    templateId: z.coerce.number().int().positive(),
   })
   .strict();
 
