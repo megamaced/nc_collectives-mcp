@@ -2,10 +2,6 @@
 
 A [Model Context Protocol](https://modelcontextprotocol.io) server for [Nextcloud Collectives](https://github.com/nextcloud/collectives) — exposes collectives, pages, tags, attachments, page history, and trash to Claude and any MCP-compatible client.
 
-Brings the same kind of LLM-driven docs workflow to Collectives that the Outline MCP provides for Outline.
-
-> **Status:** in active development; not yet released.
-
 ## How it works
 
 Collectives doesn't ship a single clean REST API for everything an MCP needs, so this server is a thin hybrid of two Nextcloud APIs:
@@ -26,7 +22,12 @@ WebDAV is the escape hatch for any operation where the OCS API is quirky or inco
 
 ## Install
 
-> Not yet released. Once tagged, this section will cover install from a release tarball.
+```bash
+git clone https://github.com/megamaced/nc_collectives-mcp.git
+cd nc_collectives-mcp
+pnpm install
+pnpm build
+```
 
 ## Configuration
 
@@ -37,7 +38,7 @@ Add to your MCP client config (Claude Code shown):
   "mcpServers": {
     "collectives": {
       "command": "node",
-      "args": ["/path/to/collectives-mcp/dist/index.js"],
+      "args": ["/path/to/nc_collectives-mcp/dist/index.js"],
       "env": {
         "NEXTCLOUD_URL": "https://your-nextcloud.example.com",
         "NEXTCLOUD_USER": "your-username",
@@ -48,28 +49,18 @@ Add to your MCP client config (Claude Code shown):
 }
 ```
 
-**Generate the app-password** in Nextcloud under Settings → Security → Devices & sessions → "Create new app password". The MCP server only ever needs an app-password, never your real account password — and you can revoke it from the same screen without affecting your main login.
+**Generate the app-password** in Nextcloud under Settings > Security > Devices & sessions > "Create new app password". The MCP server only needs an app-password, never your real account password — and you can revoke it without affecting your main login.
 
 ## Development
 
 ```bash
-git clone <this-repo-url>
-cd collectives-mcp
 pnpm install
-pnpm dev      # stdio MCP server, point `mcp inspector` at it
+pnpm dev      # stdio MCP server, point mcp inspector at it
 pnpm test     # integration tests against MCP_TEST_COLLECTIVE
-pnpm build    # tsc → dist/
+pnpm build    # tsc -> dist/
 ```
 
 Required env vars: `NEXTCLOUD_URL`, `NEXTCLOUD_USER`, `NEXTCLOUD_APP_PASSWORD`. Tests additionally need `MCP_TEST_COLLECTIVE` pointing at a throwaway collective.
-
-## CI
-
-Continuous integration is configured for [Woodpecker CI](https://woodpecker-ci.org) — see `.woodpecker.yml`. The pipeline runs lint, typecheck, build, and integration tests on every push and pull request.
-
-## Dependency updates
-
-Renovate is configured via `renovate.json`. It opens PRs for dependency upgrades, grouped sensibly (dev-dependencies together, MCP SDK on its own track) and auto-merged for non-breaking patch versions once CI is green.
 
 ## License
 

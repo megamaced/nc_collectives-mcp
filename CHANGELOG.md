@@ -29,4 +29,4 @@ First functional release of the Nextcloud Collectives MCP server.
 - TypeScript strict mode with `noUncheckedIndexedAccess`
 - Zod schema validation on all tool inputs
 - ESLint with flat config
-- Woodpecker CI: lint, typecheck, build on push; release pipeline on tag
+- GitHub Actions CI: lint, typecheck, build on push and pull request
