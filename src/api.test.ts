@@ -12,7 +12,6 @@ import {
   listTags,
   movePage,
   renamePage,
-  sanitizeTitle,
   searchPages,
   setPageEmoji,
   unfavoritePage,
@@ -96,24 +95,6 @@ describe('Collectives MCP — read-only integration', () => {
   test('searchPages accepts a query and returns an array', { skip: skipReason ?? undefined }, async () => {
     const results = await searchPages(client, 'a');
     assert.ok(Array.isArray(results), 'returns an array');
-  });
-});
-
-describe('Page sanitisation (pure)', () => {
-  test('strips path separators and control chars', () => {
-    assert.equal(sanitizeTitle('a/b\\c'), 'a-b-c');
-    assert.equal(sanitizeTitle('hello\x00there'), 'hello-there');
-  });
-  test('collapses whitespace', () => {
-    assert.equal(sanitizeTitle('  a   b  '), 'a b');
-  });
-  test('rejects empty after sanitisation', () => {
-    assert.throws(() => sanitizeTitle('   '), /empty/);
-    assert.throws(() => sanitizeTitle('.'), /Invalid/);
-    assert.throws(() => sanitizeTitle('..'), /Invalid/);
-  });
-  test('rejects oversized titles', () => {
-    assert.throws(() => sanitizeTitle('a'.repeat(300)), /too long/);
   });
 });
 

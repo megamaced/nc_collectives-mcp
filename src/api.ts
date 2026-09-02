@@ -29,30 +29,9 @@ function attachmentsDirPath(page: Page): string {
 }
 
 // -----------------------------------------------------------------------------
-// Filename sanitisation (kept for attachment filenames)
+// Filename sanitisation (attachment filenames only — page titles are the OCS
+// API's responsibility; it derives the filename server-side)
 // -----------------------------------------------------------------------------
-
-const FORBIDDEN_FILENAME_CHARS = /[/\\:*?"<>|\x00-\x1f]/g;
-const MAX_FILENAME_BYTES = 250;
-
-/**
- * Convert a page title to a filesystem-safe basename. Strips path separators
- * and control characters, collapses whitespace, refuses empty or `.`/`..`,
- * and enforces a 250-byte cap (room for `.md` under the typical 255-byte limit).
- */
-export function sanitizeTitle(title: string): string {
-  const cleaned = title.replace(FORBIDDEN_FILENAME_CHARS, '-').replace(/\s+/g, ' ').trim();
-  if (!cleaned) {
-    throw new Error('Page title cannot be empty after sanitization');
-  }
-  if (cleaned === '.' || cleaned === '..') {
-    throw new Error(`Invalid page title: "${title}"`);
-  }
-  if (Buffer.byteLength(`${cleaned}.md`, 'utf8') > MAX_FILENAME_BYTES) {
-    throw new Error(`Page title too long; "${cleaned}.md" exceeds ${MAX_FILENAME_BYTES} bytes`);
-  }
-  return cleaned;
-}
 
 /** Sanitize an attachment filename — strip path separators, control chars. */
 function sanitizeAttachmentName(name: string): string {
@@ -292,9 +271,13 @@ export async function createPage(
   );
   let page = data.page;
 
-  if (input.body) {
+  // `!== undefined`, not truthiness: an explicit empty body is a request to
+  // create an empty page — and to clear a template's content when templateId
+  // was also supplied.
+  if (input.body !== undefined) {
     const path = pageFilePath(page);
     await client.webdav('PUT', path, input.body);
+    page = await getPageMeta(client, input.collectiveId, page.id);
   }
 
   if (input.emoji) {
@@ -306,7 +289,28 @@ export async function createPage(
 
 export type UpdateMode = 'replace' | 'append' | 'prepend';
 
-/** Overwrite, append to, or prepend to a page's markdown body via WebDAV. */
+/** How many times an append/prepend re-reads and reapplies after a lost race. */
+const MAX_APPEND_ATTEMPTS = 3;
+
+/** Splice `body` onto `existing` on the side the mode asks for. */
+function spliceBody(existing: string, body: string, mode: 'append' | 'prepend'): string {
+  if (mode === 'append') {
+    const sep = existing.endsWith('\n') ? '' : '\n';
+    return `${existing}${sep}${body}`;
+  }
+  const sep = body.endsWith('\n') ? '' : '\n';
+  return `${body}${sep}${existing}`;
+}
+
+/**
+ * Overwrite, append to, or prepend to a page's markdown body via WebDAV.
+ *
+ * `replace` is an unconditional PUT — the caller supplied the whole document.
+ * `append`/`prepend` are read-modify-write, so they capture the ETag from the
+ * GET and send it as `If-Match`. If someone else writes in between, the server
+ * answers 412 and the operation is retried against the new content rather than
+ * overwriting the other edit.
+ */
 export async function updatePage(
   client: NextcloudClient,
   collectiveId: number,
@@ -317,19 +321,36 @@ export async function updatePage(
   const page = await getPageMeta(client, collectiveId, pageId);
   const path = pageFilePath(page);
 
-  let newBody = body;
-  if (mode !== 'replace') {
-    const existing = await (await client.webdav('GET', path)).text();
-    if (mode === 'append') {
-      const sep = existing.endsWith('\n') ? '' : '\n';
-      newBody = `${existing}${sep}${body}`;
-    } else {
-      const sep = body.endsWith('\n') ? '' : '\n';
-      newBody = `${body}${sep}${existing}`;
+  if (mode === 'replace') {
+    await client.webdav('PUT', path, body);
+    return getPageMeta(client, collectiveId, pageId);
+  }
+
+  for (let attempt = 0; attempt < MAX_APPEND_ATTEMPTS; attempt++) {
+    const res = await client.webdav('GET', path);
+    const etag = res.headers.get('ETag');
+    const existing = await res.text();
+    const newBody = spliceBody(existing, body, mode);
+
+    try {
+      await client.webdav('PUT', path, newBody, etag ? { 'If-Match': etag } : {});
+      return getPageMeta(client, collectiveId, pageId);
+    } catch (err) {
+      // 412 means the page changed after our read. Re-read and reapply.
+      if (err instanceof HttpError && err.status === 412 && attempt < MAX_APPEND_ATTEMPTS - 1) {
+        continue;
+      }
+      if (err instanceof HttpError && err.status === 412) {
+        throw new Error(
+          `Page ${pageId} was modified concurrently ${MAX_APPEND_ATTEMPTS} times while trying to ` +
+            `${mode} to it. Nothing was written — retry, or read the page and use mode "replace".`,
+        );
+      }
+      throw err;
     }
   }
-  await client.webdav('PUT', path, newBody);
-  return getPageMeta(client, collectiveId, pageId);
+  /* c8 ignore next */
+  throw new Error('Unexpected append/prepend retry exhaustion');
 }
 
 /**
@@ -344,7 +365,14 @@ export async function deletePage(
   collectiveId: number,
   pageId: number,
 ): Promise<void> {
-  const page = await getPageMeta(client, collectiveId, pageId);
+  let page: Page;
+  try {
+    page = await getPageMeta(client, collectiveId, pageId);
+  } catch (err) {
+    // Already gone — the caller's desired state is satisfied.
+    if (err instanceof HttpError && err.status === 404) return;
+    throw err;
+  }
   if (page.parentId === 0) {
     throw new Error('Cannot delete the Landing page; delete the Collective instead.');
   }
@@ -427,10 +455,13 @@ export async function copyPage(
 ): Promise<Page> {
   const body: Record<string, unknown> = { copy: true };
   if (newTitle) body.title = newTitle;
+  // Marked non-idempotent explicitly: the method is PUT, but each call creates
+  // another copy, so a 5xx must not be replayed.
   const data = await client.ocs<{ page: Page }>(
     'PUT',
     `${COLLECTIVES_API}/collectives/${collectiveId}/pages/${pageId}`,
     body,
+    false,
   );
   return data.page;
 }
@@ -489,9 +520,20 @@ export async function listTags(
   return data.tags ?? [];
 }
 
-/** Strip leading `#` from a hex colour — the DB column is varchar(6). */
-function normalizeColor(color: string): string {
-  return color.replace(/^#/, '');
+/**
+ * Normalise a hex colour to the bare six digits the DB column (`varchar(6)`)
+ * accepts. Anything else is rejected here rather than becoming a database
+ * overflow or a silently wrong colour on the server.
+ */
+export function normalizeColor(color: string): string {
+  const cleaned = color.trim().replace(/^#/, '');
+  if (!/^[0-9a-fA-F]{6}$/.test(cleaned)) {
+    throw new Error(
+      `Invalid tag color "${color}": expected exactly six hexadecimal digits, ` +
+        'with an optional leading "#" (e.g. "#2d7d46" or "2d7d46").',
+    );
+  }
+  return cleaned;
 }
 
 /** Create a new tag in a Collective. */
@@ -664,8 +706,19 @@ export async function listPageVersions(
 }
 
 /**
+ * A Nextcloud version id is the version's storage basename — digits, and on
+ * some backends a suffix of word characters. Notably it is never `.` or `..`,
+ * which `encodeURIComponent` passes through unchanged.
+ */
+const VERSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/**
  * Restore a specific version of a page by copying it back to the live path.
- * The `versionId` is URI-encoded to prevent path traversal.
+ *
+ * The `versionId` is checked against the page's real version list before it is
+ * used to build a path. URI-encoding alone is not path-safety: `..` survives
+ * `encodeURIComponent`, and URL normalisation would then point the COPY source
+ * at the versions collection instead of the chosen version.
  */
 export async function restorePageVersion(
   client: NextcloudClient,
@@ -673,15 +726,30 @@ export async function restorePageVersion(
   pageId: number,
   versionId: string,
 ): Promise<Page> {
+  if (versionId === '.' || versionId === '..' || !VERSION_ID_PATTERN.test(versionId)) {
+    throw new Error(
+      `Invalid versionId "${versionId}". Use a versionId returned by list_page_versions.`,
+    );
+  }
+
+  const available = await listPageVersions(client, collectiveId, pageId);
+  if (!available.some((v) => v.versionId === versionId)) {
+    throw new Error(
+      `Version "${versionId}" does not exist for page ${pageId}. ` +
+        `Available versions: ${available.map((v) => v.versionId).join(', ') || '(none)'}.`,
+    );
+  }
+
   const page = await getPageMeta(client, collectiveId, pageId);
   const livePath = pageFilePath(page);
   const liveUrl = client.webdavUrl(livePath);
-  const safeVersionId = encodeURIComponent(versionId);
 
-  await client.webdavVersions('COPY', `/versions/${pageId}/${safeVersionId}`, undefined, {
-    Destination: liveUrl,
-    Overwrite: 'T',
-  });
+  await client.webdavVersions(
+    'COPY',
+    `/versions/${pageId}/${encodeURIComponent(versionId)}`,
+    undefined,
+    { Destination: liveUrl, Overwrite: 'T' },
+  );
 
   return getPageMeta(client, collectiveId, pageId);
 }
@@ -809,17 +877,36 @@ export async function uploadAttachment(
   };
 }
 
-/** Delete an attachment from a page via WebDAV. */
+/**
+ * Delete an attachment from a page.
+ *
+ * The filename is resolved against the page's actual attachment list and the
+ * deletion is issued by attachment id through OCS. Building a WebDAV path from
+ * a caller-supplied name is unsafe: `encodeURIComponent` leaves `.` and `..`
+ * untouched, and URL normalisation then walks the DELETE out of the
+ * `.attachments.{pageId}/` directory and into the page folder or Collective root.
+ */
 export async function deleteAttachment(
   client: NextcloudClient,
   collectiveId: number,
   pageId: number,
   filename: string,
 ): Promise<void> {
-  const page = await getPageMeta(client, collectiveId, pageId);
-  const dirPath = attachmentsDirPath(page);
-  const filePath = `${dirPath}/${encodeURIComponent(filename)}`;
-  await client.webdav('DELETE', filePath);
+  const attachments = await listAttachments(client, collectiveId, pageId);
+  const match = attachments.find((a) => a.name === filename);
+  if (!match) {
+    const available = attachments.map((a) => a.name);
+    throw new Error(
+      `No attachment named "${filename}" on page ${pageId}. ` +
+        (available.length > 0
+          ? `Available: ${available.join(', ')}.`
+          : 'The page has no attachments.'),
+    );
+  }
+  await client.ocs(
+    'DELETE',
+    `${COLLECTIVES_API}/collectives/${collectiveId}/pages/${pageId}/attachments/${match.id}`,
+  );
 }
 
 // -----------------------------------------------------------------------------
@@ -840,7 +927,9 @@ export async function listTemplates(
 
 /**
  * Create a page template.
- * Per the OpenAPI spec: `POST .../pages/templates/{parentId}` with `{title}` in body.
+ * Per the OpenAPI spec: `POST .../pages/templates/{parentId}` — `parentId` is
+ * required in the body as well as the path, and the official web client sends
+ * both.
  */
 export async function createTemplate(
   client: NextcloudClient,
@@ -851,7 +940,7 @@ export async function createTemplate(
   const data = await client.ocs<{ template: Page }>(
     'POST',
     `${COLLECTIVES_API}/collectives/${collectiveId}/pages/templates/${parentId}`,
-    { title },
+    { title, parentId },
   );
   return data.template;
 }
