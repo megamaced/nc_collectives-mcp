@@ -4,47 +4,68 @@ import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js';
 import {
   copyPage,
   createCollective,
+  createCollectiveShare,
   createPage,
+  createPageShare,
   createTag,
   createTemplate,
   deleteAttachment,
   deleteCollective,
+  deleteCollectiveShare,
   deletePage,
+  deletePageShare,
   deleteTag,
   deleteTemplate,
   favoritePage,
+  getAttachment,
   getBacklinks,
   getPage,
+  getTemplate,
+  isTextualMimeType,
   listAttachments,
   listCollectives,
   listPages,
   listPageVersions,
   listRecentPages,
+  listShares,
   listTags,
   listTemplates,
   listTrashedCollectives,
   listTrashedPages,
   movePage,
+  movePageToCollective,
   permanentlyDeleteCollective,
   purgePage,
+  renameAttachment,
   renamePage,
+  restoreAttachment,
   restorePage,
   restorePageVersion,
   restoreTrashedCollective,
   searchPages,
   searchPagesInCollective,
   setPageEmoji,
+  setPageFullWidth,
+  setPageMode,
   setPageTags,
+  setSubpageOrder,
   setTemplateEmoji,
+  setUserPageOrder,
+  setUserShowMembers,
+  setUserShowRecentPages,
+  touchPage,
   unfavoritePage,
   updateCollective,
+  updateCollectiveShare,
   updatePage,
+  updatePageShare,
   updateTag,
   updateTemplate,
+  updateTemplateContent,
   uploadAttachment,
 } from './api.js';
 import { HttpError, OcsError, type NextcloudClient } from './http.js';
-import type { PageAttachment } from './types.js';
+import type { CollectiveShare, PageAttachment } from './types.js';
 
 interface Context {
   client: NextcloudClient;
@@ -667,6 +688,7 @@ const MovePageArgs = z
     collectiveId: z.coerce.number().int().positive(),
     pageId: z.coerce.number().int().positive(),
     newParentPageId: z.coerce.number().int().positive(),
+    index: z.coerce.number().int().nonnegative().optional(),
   })
   .strict();
 
@@ -682,6 +704,7 @@ const movePageTool: ToolDef<typeof MovePageArgs> = {
         collectiveId: { type: 'integer' },
         pageId: { type: 'integer' },
         newParentPageId: { type: 'integer' },
+        index: { type: 'integer', description: "Position among the target parent's children (0 = first). Omit to use the server default." },
       },
       required: ['collectiveId', 'pageId', 'newParentPageId'],
       additionalProperties: false,
@@ -696,7 +719,7 @@ const movePageTool: ToolDef<typeof MovePageArgs> = {
   },
   handler: async (args, ctx) =>
     jsonResult(
-      await movePage(ctx.client, args.collectiveId, args.pageId, args.newParentPageId),
+      await movePage(ctx.client, args.collectiveId, args.pageId, args.newParentPageId, args.index),
     ),
 };
 
@@ -740,6 +763,7 @@ const CopyPageArgs = z
     collectiveId: z.coerce.number().int().positive(),
     pageId: z.coerce.number().int().positive(),
     newTitle: z.string().min(1).optional(),
+    index: z.coerce.number().int().nonnegative().optional(),
   })
   .strict();
 
@@ -755,6 +779,7 @@ const copyPageTool: ToolDef<typeof CopyPageArgs> = {
         collectiveId: { type: 'integer' },
         pageId: { type: 'integer' },
         newTitle: { type: 'string', description: 'Title for the copy. If omitted, server assigns a default.' },
+        index: { type: 'integer', description: "Position among the target parent's children (0 = first). Omit to use the server default." },
       },
       required: ['collectiveId', 'pageId'],
       additionalProperties: false,
@@ -768,7 +793,7 @@ const copyPageTool: ToolDef<typeof CopyPageArgs> = {
     },
   },
   handler: async (args, ctx) =>
-    jsonResult(await copyPage(ctx.client, args.collectiveId, args.pageId, args.newTitle)),
+    jsonResult(await copyPage(ctx.client, args.collectiveId, args.pageId, args.newTitle, args.index)),
 };
 
 const PageRefArgs = z
@@ -919,7 +944,8 @@ const updateTagTool: ToolDef<typeof UpdateTagArgs> = {
   argsSchema: UpdateTagArgs,
   tool: {
     name: 'update_tag',
-    description: 'Update a tag\'s name and color.',
+    description:
+      'Update a tag. Both name and color are always applied, so pass the existing value for whichever one you are not changing — omitting a field is not supported by the API. Read current values with list_tags first.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1256,29 +1282,6 @@ const listAttachmentsTool: ToolDef<typeof PageRefArgs> = {
   },
 };
 
-/**
- * MIME types whose payload is text, so `content` is taken as literal UTF-8.
- * Anything else defaults to base64. The `+json` / `+xml` structured suffixes
- * and `image/svg+xml` matter here: they are textual despite not being `text/*`,
- * and guessing binary for them silently truncated the upload to whatever the
- * base64 decoder made of the raw characters.
- */
-function isTextualMimeType(contentType: string): boolean {
-  const type = contentType.split(';')[0]!.trim().toLowerCase();
-  if (type.startsWith('text/')) return true;
-  if (/\+(json|xml)$/.test(type)) return true;
-  return [
-    'application/json',
-    'application/xml',
-    'application/javascript',
-    'application/ecmascript',
-    'application/x-yaml',
-    'application/yaml',
-    'application/sql',
-    'application/graphql',
-  ].includes(type);
-}
-
 /** Strict base64: Node's decoder silently discards anything it cannot parse. */
 function decodeBase64Strict(content: string): Buffer {
   const compact = content.replace(/\s+/g, '');
@@ -1369,7 +1372,8 @@ const deleteAttachmentTool: ToolDef<typeof DeleteAttachmentArgs> = {
   argsSchema: DeleteAttachmentArgs,
   tool: {
     name: 'delete_attachment',
-    description: 'Delete an attachment from a page.',
+    description:
+      'Delete an attachment from a page. Returns the deleted attachment including its id, which restore_attachment needs to undo this.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1389,8 +1393,16 @@ const deleteAttachmentTool: ToolDef<typeof DeleteAttachmentArgs> = {
     },
   },
   handler: async (args, ctx) => {
-    await deleteAttachment(ctx.client, args.collectiveId, args.pageId, args.filename);
-    return textResult(`Attachment "${args.filename}" deleted from page ${args.pageId}.`);
+    const attachment = await deleteAttachment(
+      ctx.client,
+      args.collectiveId,
+      args.pageId,
+      args.filename,
+    );
+    return jsonResult({
+      deleted: attachment,
+      note: `Restore with restore_attachment using attachmentId ${attachment.id}.`,
+    });
   },
 };
 
@@ -1568,6 +1580,725 @@ const deleteTemplateTool: ToolDef<typeof DeleteTemplateArgs> = {
 // Registry
 // -----------------------------------------------------------------------------
 
+// -----------------------------------------------------------------------------
+// Page layout, ordering, and touch
+// -----------------------------------------------------------------------------
+
+const SetPageFullWidthArgs = z
+  .object({
+    collectiveId: z.coerce.number().int().positive(),
+    pageId: z.coerce.number().int().positive(),
+    fullWidth: z.coerce.boolean(),
+  })
+  .strict();
+
+const setPageFullWidthTool: ToolDef<typeof SetPageFullWidthArgs> = {
+  argsSchema: SetPageFullWidthArgs,
+  tool: {
+    name: 'set_page_full_width',
+    description:
+      'Toggle a page\'s full-width layout. This is a Collective-wide display property of the page, not a per-user preference.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        pageId: { type: 'integer' },
+        fullWidth: { type: 'boolean', description: 'true for full width, false for the default column width.' },
+      },
+      required: ['collectiveId', 'pageId', 'fullWidth'],
+      additionalProperties: false,
+    },
+    annotations: {
+      title: 'Set page width',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(await setPageFullWidth(ctx.client, args.collectiveId, args.pageId, args.fullWidth)),
+};
+
+const SetSubpageOrderArgs = z
+  .object({
+    collectiveId: z.coerce.number().int().positive(),
+    pageId: z.coerce.number().int().positive(),
+    subpageOrder: z.array(z.coerce.number().int().positive()),
+  })
+  .strict();
+
+const setSubpageOrderTool: ToolDef<typeof SetSubpageOrderArgs> = {
+  argsSchema: SetSubpageOrderArgs,
+  tool: {
+    name: 'set_subpage_order',
+    description:
+      'Set the explicit left-to-right ordering of a page\'s immediate child pages. Every id must be a direct child of the page; duplicates are rejected. Pass an empty array to clear the manual order and fall back to the Collective sort. Only takes effect for users whose page order is set to "byOrder".',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        pageId: { type: 'integer', description: 'The parent page whose children are being ordered.' },
+        subpageOrder: {
+          type: 'array',
+          items: { type: 'integer' },
+          description: 'Child page ids in the desired order. Empty array clears the manual order.',
+        },
+      },
+      required: ['collectiveId', 'pageId', 'subpageOrder'],
+      additionalProperties: false,
+    },
+    annotations: {
+      title: 'Set subpage order',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(await setSubpageOrder(ctx.client, args.collectiveId, args.pageId, args.subpageOrder)),
+};
+
+const touchPageTool: ToolDef<typeof PageRefArgs> = {
+  argsSchema: PageRefArgs,
+  tool: {
+    name: 'touch_page',
+    description:
+      'Bump a page\'s modification timestamp and record the authenticated user as its last editor, without changing content. Useful for marking a page as reviewed.',
+    inputSchema: {
+      type: 'object',
+      properties: { collectiveId: { type: 'integer' }, pageId: { type: 'integer' } },
+      required: ['collectiveId', 'pageId'],
+      additionalProperties: false,
+    },
+    annotations: {
+      title: 'Touch page',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(await touchPage(ctx.client, args.collectiveId, args.pageId)),
+};
+
+// -----------------------------------------------------------------------------
+// Cross-Collective move / copy
+// -----------------------------------------------------------------------------
+
+const MovePageToCollectiveArgs = z
+  .object({
+    collectiveId: z.coerce.number().int().positive(),
+    pageId: z.coerce.number().int().positive(),
+    newCollectiveId: z.coerce.number().int().positive(),
+    parentId: z.coerce.number().int().nonnegative().optional(),
+    index: z.coerce.number().int().nonnegative().optional(),
+    copy: z.coerce.boolean().optional(),
+  })
+  .strict();
+
+const movePageToCollectiveTool: ToolDef<typeof MovePageToCollectiveArgs> = {
+  argsSchema: MovePageToCollectiveArgs,
+  tool: {
+    name: 'move_page_to_collective',
+    description:
+      'Move or copy a page (with its subpages and attachments) into a different Collective. Set copy: true to duplicate instead of moving. The page id changes on arrival, so use the returned page for follow-up calls. For reorganising within one Collective use move_page or copy_page instead.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer', description: 'Source Collective id.' },
+        pageId: { type: 'integer', description: 'Page to move or copy.' },
+        newCollectiveId: { type: 'integer', description: 'Destination Collective id.' },
+        parentId: {
+          type: 'integer',
+          description: 'Target parent page in the destination Collective. Omit to place it at the root.',
+        },
+        index: { type: 'integer', description: 'Position among the target parent children (0 = first).' },
+        copy: { type: 'boolean', description: 'Copy instead of moving. Defaults to false (move).' },
+      },
+      required: ['collectiveId', 'pageId', 'newCollectiveId'],
+      additionalProperties: false,
+    },
+    annotations: {
+      title: 'Move page to another Collective',
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(
+      await movePageToCollective(ctx.client, args.collectiveId, args.pageId, args.newCollectiveId, {
+        parentId: args.parentId,
+        index: args.index,
+        copy: args.copy,
+      }),
+    ),
+};
+
+// -----------------------------------------------------------------------------
+// Public shares
+// -----------------------------------------------------------------------------
+
+/**
+ * Strip the password the API echoes back on share create/update. Callers never
+ * need it, and a share password must not leak into transcripts or logs. The
+ * boolean is enough to tell whether a share is password-protected.
+ */
+function redactShare(share: CollectiveShare): Omit<CollectiveShare, 'password'> & {
+  hasPassword: boolean;
+  scope: 'collective' | 'page';
+} {
+  const { password, ...rest } = share;
+  return { ...rest, hasPassword: Boolean(password), scope: share.pageId ? 'page' : 'collective' };
+}
+
+const ListSharesArgs = z
+  .object({ collectiveId: z.coerce.number().int().positive() })
+  .strict();
+
+const listSharesTool: ToolDef<typeof ListSharesArgs> = {
+  argsSchema: ListSharesArgs,
+  tool: {
+    name: 'list_shares',
+    description:
+      'List all public share links on a Collective, including per-page shares. Each entry reports its scope ("collective" or "page"), token, whether visitors can edit, and whether a password is set. Passwords themselves are never returned.',
+    inputSchema: {
+      type: 'object',
+      properties: { collectiveId: { type: 'integer' } },
+      required: ['collectiveId'],
+      additionalProperties: false,
+    },
+    annotations: {
+      title: 'List shares',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult((await listShares(ctx.client, args.collectiveId)).map(redactShare)),
+};
+
+const CreateCollectiveShareArgs = z
+  .object({
+    collectiveId: z.coerce.number().int().positive(),
+    password: z.string().min(1).optional(),
+  })
+  .strict();
+
+const createCollectiveShareTool: ToolDef<typeof CreateCollectiveShareArgs> = {
+  argsSchema: CreateCollectiveShareArgs,
+  tool: {
+    name: 'create_collective_share',
+    description:
+      'Create a public share link for an entire Collective. Anyone with the link can read it (and edit, if you later enable that with update_share). Returns the share token; build the URL as {nextcloud}/apps/collectives/p/{token}.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        password: {
+          type: 'string',
+          description: 'Optional password required to open the link. Never echoed back.',
+        },
+      },
+      required: ['collectiveId'],
+      additionalProperties: false,
+    },
+    annotations: {
+      title: 'Create Collective share',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(redactShare(await createCollectiveShare(ctx.client, args.collectiveId, args.password))),
+};
+
+const CreatePageShareArgs = z
+  .object({
+    collectiveId: z.coerce.number().int().positive(),
+    pageId: z.coerce.number().int().positive(),
+    password: z.string().min(1).optional(),
+  })
+  .strict();
+
+const createPageShareTool: ToolDef<typeof CreatePageShareArgs> = {
+  argsSchema: CreatePageShareArgs,
+  tool: {
+    name: 'create_page_share',
+    description:
+      'Create a public share link for a single page rather than the whole Collective. Returns the share token; build the URL as {nextcloud}/apps/collectives/p/{token}.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        pageId: { type: 'integer' },
+        password: {
+          type: 'string',
+          description: 'Optional password required to open the link. Never echoed back.',
+        },
+      },
+      required: ['collectiveId', 'pageId'],
+      additionalProperties: false,
+    },
+    annotations: {
+      title: 'Create page share',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(
+      redactShare(await createPageShare(ctx.client, args.collectiveId, args.pageId, args.password)),
+    ),
+};
+
+const UpdateShareArgs = z
+  .object({
+    collectiveId: z.coerce.number().int().positive(),
+    token: z.string().min(1),
+    editable: z.coerce.boolean(),
+    pageId: z.coerce.number().int().positive().optional(),
+    password: z.string().optional(),
+  })
+  .strict();
+
+const updateShareTool: ToolDef<typeof UpdateShareArgs> = {
+  argsSchema: UpdateShareArgs,
+  tool: {
+    name: 'update_share',
+    description:
+      'Update an existing share link. `editable` is required by the API and is always applied, so state it explicitly or you may silently change it. Pass pageId for a page share; omit it for the Collective-wide share. Pass an empty password to remove an existing one.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        token: { type: 'string', description: 'Share token from list_shares.' },
+        editable: { type: 'boolean', description: 'Whether visitors may edit through the link.' },
+        pageId: {
+          type: 'integer',
+          description: 'Required for a page share; omit for the Collective-wide share.',
+        },
+        password: {
+          type: 'string',
+          description: 'Set a new password, or "" to remove the existing one. Omit to leave unchanged.',
+        },
+      },
+      required: ['collectiveId', 'token', 'editable'],
+      additionalProperties: false,
+    },
+    annotations: {
+      title: 'Update share',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  },
+  handler: async (args, ctx) => {
+    const patch = { editable: args.editable, password: args.password };
+    const share = args.pageId
+      ? await updatePageShare(ctx.client, args.collectiveId, args.pageId, args.token, patch)
+      : await updateCollectiveShare(ctx.client, args.collectiveId, args.token, patch);
+    return jsonResult(redactShare(share));
+  },
+};
+
+const DeleteShareArgs = z
+  .object({
+    collectiveId: z.coerce.number().int().positive(),
+    token: z.string().min(1),
+    pageId: z.coerce.number().int().positive().optional(),
+  })
+  .strict();
+
+const deleteShareTool: ToolDef<typeof DeleteShareArgs> = {
+  argsSchema: DeleteShareArgs,
+  tool: {
+    name: 'delete_share',
+    description:
+      'Revoke a public share link. The link stops working immediately for everyone holding it. Pass pageId for a page share; omit it for the Collective-wide share.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        token: { type: 'string', description: 'Share token from list_shares.' },
+        pageId: {
+          type: 'integer',
+          description: 'Required for a page share; omit for the Collective-wide share.',
+        },
+      },
+      required: ['collectiveId', 'token'],
+      additionalProperties: false,
+    },
+    annotations: {
+      title: 'Revoke share',
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  },
+  handler: async (args, ctx) => {
+    if (args.pageId) {
+      await deletePageShare(ctx.client, args.collectiveId, args.pageId, args.token);
+    } else {
+      await deleteCollectiveShare(ctx.client, args.collectiveId, args.token);
+    }
+    return textResult(`Share ${args.token} revoked.`);
+  },
+};
+
+// -----------------------------------------------------------------------------
+// Collective and user display settings
+// -----------------------------------------------------------------------------
+
+const SetPageModeArgs = z
+  .object({
+    collectiveId: z.coerce.number().int().positive(),
+    mode: z.enum(['view', 'edit']),
+  })
+  .strict();
+
+const setPageModeTool: ToolDef<typeof SetPageModeArgs> = {
+  argsSchema: SetPageModeArgs,
+  tool: {
+    name: 'set_page_mode',
+    description:
+      'Set the default page mode for a Collective — whether pages open in view or edit mode. This applies to every member of the Collective, unlike set_user_settings which is per-user.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        mode: { type: 'string', enum: ['view', 'edit'], description: 'Default mode pages open in.' },
+      },
+      required: ['collectiveId', 'mode'],
+      additionalProperties: false,
+    },
+    annotations: {
+      title: 'Set Collective page mode',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  },
+  handler: async (args, ctx) => jsonResult(await setPageMode(ctx.client, args.collectiveId, args.mode)),
+};
+
+const SetUserSettingsArgs = z
+  .object({
+    collectiveId: z.coerce.number().int().positive(),
+    pageOrder: z.enum(['byOrder', 'byTimeAsc', 'byTitleAsc', 'byTimeDesc', 'byTitleDesc']).optional(),
+    showMembers: z.coerce.boolean().optional(),
+    showRecentPages: z.coerce.boolean().optional(),
+  })
+  .strict()
+  .refine(
+    (v) =>
+      v.pageOrder !== undefined || v.showMembers !== undefined || v.showRecentPages !== undefined,
+    { message: 'Provide at least one of pageOrder, showMembers, or showRecentPages.' },
+  );
+
+const setUserSettingsTool: ToolDef<typeof SetUserSettingsArgs> = {
+  argsSchema: SetUserSettingsArgs,
+  tool: {
+    name: 'set_user_settings',
+    description:
+      'Update the authenticated user\'s own display preferences for one Collective: page sort order, and whether the members and recent-pages widgets on the landing page are expanded. These are per-user and do not affect other members — use set_page_mode for the Collective-wide setting. Provide at least one field; omitted fields are left unchanged.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        pageOrder: {
+          type: 'string',
+          enum: ['byOrder', 'byTimeAsc', 'byTitleAsc', 'byTimeDesc', 'byTitleDesc'],
+          description: 'Page sort order. "byOrder" honours the manual order set by set_subpage_order.',
+        },
+        showMembers: { type: 'boolean', description: 'Expand the members widget on the landing page.' },
+        showRecentPages: {
+          type: 'boolean',
+          description: 'Expand the recent-pages widget on the landing page.',
+        },
+      },
+      required: ['collectiveId'],
+      additionalProperties: false,
+    },
+    annotations: {
+      title: 'Set user display settings',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  },
+  handler: async (args, ctx) => {
+    const applied: string[] = [];
+    if (args.pageOrder !== undefined) {
+      await setUserPageOrder(ctx.client, args.collectiveId, args.pageOrder);
+      applied.push(`pageOrder=${args.pageOrder}`);
+    }
+    if (args.showMembers !== undefined) {
+      await setUserShowMembers(ctx.client, args.collectiveId, args.showMembers);
+      applied.push(`showMembers=${args.showMembers}`);
+    }
+    if (args.showRecentPages !== undefined) {
+      await setUserShowRecentPages(ctx.client, args.collectiveId, args.showRecentPages);
+      applied.push(`showRecentPages=${args.showRecentPages}`);
+    }
+    return textResult(`Updated user settings for Collective ${args.collectiveId}: ${applied.join(', ')}.`);
+  },
+};
+
+// -----------------------------------------------------------------------------
+// Attachment download / rename / restore
+// -----------------------------------------------------------------------------
+
+const GetAttachmentArgs = z
+  .object({
+    collectiveId: z.coerce.number().int().positive(),
+    pageId: z.coerce.number().int().positive(),
+    filename: z.string().min(1),
+    encoding: z.enum(['utf8', 'base64']).optional(),
+  })
+  .strict();
+
+const getAttachmentTool: ToolDef<typeof GetAttachmentArgs> = {
+  argsSchema: GetAttachmentArgs,
+  tool: {
+    name: 'get_attachment',
+    description:
+      'Download an attachment\'s contents. Returns the bytes as utf8 text or a base64 string, with the encoding stated in the result. Refuses files over 5 MB, which should be fetched from Nextcloud directly.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        pageId: { type: 'integer' },
+        filename: { type: 'string', description: 'Attachment filename from list_attachments.' },
+        encoding: {
+          type: 'string',
+          enum: ['utf8', 'base64'],
+          description:
+            'How to return the content. If omitted it is inferred from the stored MIME type: textual types as utf8, everything else as base64.',
+        },
+      },
+      required: ['collectiveId', 'pageId', 'filename'],
+      additionalProperties: false,
+    },
+    annotations: {
+      title: 'Download attachment',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  },
+  handler: async (args, ctx) => {
+    const result = await getAttachment(
+      ctx.client,
+      args.collectiveId,
+      args.pageId,
+      args.filename,
+      args.encoding,
+    );
+    return jsonResult({
+      ...result,
+      attachment: withRelativePath(result.attachment, args.pageId),
+    });
+  },
+};
+
+const RenameAttachmentArgs = z
+  .object({
+    collectiveId: z.coerce.number().int().positive(),
+    pageId: z.coerce.number().int().positive(),
+    filename: z.string().min(1),
+    newName: z.string().min(1),
+  })
+  .strict();
+
+const renameAttachmentTool: ToolDef<typeof RenameAttachmentArgs> = {
+  argsSchema: RenameAttachmentArgs,
+  tool: {
+    name: 'rename_attachment',
+    description:
+      'Rename an attachment on a page. Existing references to the old filename in page bodies are NOT rewritten — update them yourself, using the returned relativePath.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        pageId: { type: 'integer' },
+        filename: { type: 'string', description: 'Current attachment filename from list_attachments.' },
+        newName: { type: 'string', description: 'New filename, including the extension.' },
+      },
+      required: ['collectiveId', 'pageId', 'filename', 'newName'],
+      additionalProperties: false,
+    },
+    annotations: {
+      title: 'Rename attachment',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  },
+  handler: async (args, ctx) => {
+    const attachment = await renameAttachment(
+      ctx.client,
+      args.collectiveId,
+      args.pageId,
+      args.filename,
+      args.newName,
+    );
+    return jsonResult(withRelativePath(attachment, args.pageId));
+  },
+};
+
+const RestoreAttachmentArgs = z
+  .object({
+    collectiveId: z.coerce.number().int().positive(),
+    pageId: z.coerce.number().int().positive(),
+    attachmentId: z.coerce.number().int().positive(),
+  })
+  .strict();
+
+const restoreAttachmentTool: ToolDef<typeof RestoreAttachmentArgs> = {
+  argsSchema: RestoreAttachmentArgs,
+  tool: {
+    name: 'restore_attachment',
+    description:
+      'Restore a deleted attachment from the page\'s attachment trash. Takes the numeric attachment id — a trashed attachment no longer appears in list_attachments, so there is no name to look up. delete_attachment returns the id you need.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        pageId: { type: 'integer' },
+        attachmentId: {
+          type: 'integer',
+          description: 'Attachment id, as returned by delete_attachment.',
+        },
+      },
+      required: ['collectiveId', 'pageId', 'attachmentId'],
+      additionalProperties: false,
+    },
+    annotations: {
+      title: 'Restore attachment',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  },
+  handler: async (args, ctx) => {
+    const attachment = await restoreAttachment(
+      ctx.client,
+      args.collectiveId,
+      args.pageId,
+      args.attachmentId,
+    );
+    return jsonResult(withRelativePath(attachment, args.pageId));
+  },
+};
+
+// -----------------------------------------------------------------------------
+// Template content
+// -----------------------------------------------------------------------------
+
+const TemplateRefArgs = z
+  .object({
+    collectiveId: z.coerce.number().int().positive(),
+    templateId: z.coerce.number().int().positive(),
+  })
+  .strict();
+
+const getTemplateTool: ToolDef<typeof TemplateRefArgs> = {
+  argsSchema: TemplateRefArgs,
+  tool: {
+    name: 'get_template',
+    description:
+      'Read a page template\'s metadata and markdown body. Use this to inspect what create_page(templateId) will produce.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        templateId: { type: 'integer', description: 'Template id from list_templates.' },
+      },
+      required: ['collectiveId', 'templateId'],
+      additionalProperties: false,
+    },
+    annotations: {
+      title: 'Read template',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  },
+  handler: async (args, ctx) => {
+    const { template, markdown } = await getTemplate(ctx.client, args.collectiveId, args.templateId);
+    return jsonResult({ template, markdown });
+  },
+};
+
+const UpdateTemplateContentArgs = z
+  .object({
+    collectiveId: z.coerce.number().int().positive(),
+    templateId: z.coerce.number().int().positive(),
+    body: z.string(),
+    mode: z.enum(['replace', 'append', 'prepend']).default('replace'),
+  })
+  .strict();
+
+const updateTemplateContentTool: ToolDef<typeof UpdateTemplateContentArgs> = {
+  argsSchema: UpdateTemplateContentArgs,
+  tool: {
+    name: 'update_template_content',
+    description:
+      'Write a page template\'s markdown body. This is the content create_page(templateId) copies into new pages. An empty body is allowed and clears the template. Append and prepend are protected against concurrent edits and fail rather than overwriting someone else\'s change.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        collectiveId: { type: 'integer' },
+        templateId: { type: 'integer', description: 'Template id from list_templates.' },
+        body: { type: 'string', description: 'Markdown content. Empty string clears the template.' },
+        mode: {
+          type: 'string',
+          enum: ['replace', 'append', 'prepend'],
+          description: 'How to apply body. Defaults to replace.',
+        },
+      },
+      required: ['collectiveId', 'templateId', 'body'],
+      additionalProperties: false,
+    },
+    annotations: {
+      title: 'Write template content',
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  },
+  handler: async (args, ctx) =>
+    jsonResult(
+      await updateTemplateContent(
+        ctx.client,
+        args.collectiveId,
+        args.templateId,
+        args.body,
+        args.mode,
+      ),
+    ),
+};
+
 const REGISTRY = {
   ping,
   list_collectives: listCollectivesTool,
@@ -1586,8 +2317,12 @@ const REGISTRY = {
   delete_page: deletePageTool,
   rename_page: renamePageTool,
   move_page: movePageTool,
+  move_page_to_collective: movePageToCollectiveTool,
   set_page_emoji: setPageEmojiTool,
   copy_page: copyPageTool,
+  set_page_full_width: setPageFullWidthTool,
+  set_subpage_order: setSubpageOrderTool,
+  touch_page: touchPageTool,
   favorite_page: favoritePageTool,
   unfavorite_page: unfavoritePageTool,
   list_tags: listTagsTool,
@@ -1605,11 +2340,23 @@ const REGISTRY = {
   list_attachments: listAttachmentsTool,
   upload_attachment: uploadAttachmentTool,
   delete_attachment: deleteAttachmentTool,
+  get_attachment: getAttachmentTool,
+  rename_attachment: renameAttachmentTool,
+  restore_attachment: restoreAttachmentTool,
   list_templates: listTemplatesTool,
   create_template: createTemplateTool,
   update_template: updateTemplateTool,
   set_template_emoji: setTemplateEmojiTool,
   delete_template: deleteTemplateTool,
+  get_template: getTemplateTool,
+  update_template_content: updateTemplateContentTool,
+  list_shares: listSharesTool,
+  create_collective_share: createCollectiveShareTool,
+  create_page_share: createPageShareTool,
+  update_share: updateShareTool,
+  delete_share: deleteShareTool,
+  set_page_mode: setPageModeTool,
+  set_user_settings: setUserSettingsTool,
 } as const;
 
 export const TOOLS: Tool[] = Object.values(REGISTRY).map((t) => t.tool);

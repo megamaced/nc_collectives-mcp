@@ -69,6 +69,25 @@ export interface CollectiveTag {
   color?: string;
 }
 
+/**
+ * A public share link, as returned by the Collectives shares endpoints. One
+ * shape covers both kinds: `pageId` is 0 for a Collective-wide share and the
+ * page's id for a page share.
+ *
+ * The server echoes `password` back on create/update. Treat it as write-only —
+ * `tools.ts` redacts it before anything reaches the MCP client.
+ */
+export interface CollectiveShare {
+  id: number;
+  collectiveId: number;
+  /** 0 for a Collective-level share; otherwise the shared page's id. */
+  pageId: number;
+  token: string;
+  owner: string;
+  editable: boolean;
+  password: string;
+}
+
 /** An attachment on a page, as returned by the OCS attachments endpoint. */
 export interface PageAttachment {
   id: number;
@@ -78,6 +97,10 @@ export interface PageAttachment {
   mimetype: string;
   timestamp: number;
   hasPreview?: boolean;
+  /** Path within the user's Files area. Present on OCS list responses. */
+  path?: string;
+  /** Path relative to the Collective root. Present on OCS list responses. */
+  internalPath?: string;
 }
 
 /** A historical version of a page from the WebDAV versions API. */

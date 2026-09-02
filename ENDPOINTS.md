@@ -15,6 +15,9 @@ All paths are relative to `/ocs/v2.php/apps/collectives/api/v1.0`. All requests 
 7. **Page CRUD should use OCS, not WebDAV.** The OCS endpoints handle folder promotion, indexing, and naming atomically. WebDAV-based create/rename/move is fragile (race conditions, manual path math, no folder page support).
 8. **Moving a page via OCS can change its Nextcloud file ID.** The `GET /pages/{id}` endpoint may 404 on the new ID until re-indexed. Use `GET /pages` (list all) as a fallback.
 9. **Attachment responses have no `pageId` field.** You must track pageId from your own context.
+10. **Share responses are not enveloped.** Unlike every other endpoint, share create/update return the share object directly as `ocs.data`, and the share list returns a bare array. There is no `{share: ...}` / `{shares: ...}` wrapper.
+11. **Templates have no single-template GET.** Resolve a template by filtering `GET /pages/templates`. Template bodies are read and written over WebDAV exactly like page bodies — a template is a page on disk.
+12. **`touch` is a `GET` that mutates**, and the cross-collective `to/{newCollectiveId}` endpoint returns no page data, so re-list the destination collective to find the moved page (its id changes).
 
 ---
 
@@ -50,8 +53,8 @@ All paths are relative to `/ocs/v2.php/apps/collectives/api/v1.0`. All requests 
 | `PUT` | `/collectives/{cId}/pages/{id}/emoji` | `{emoji}` | `{page: {...}}` | Set/clear emoji |
 | `PUT` | `/collectives/{cId}/pages/{id}/fullWidth` | `{fullWidth}` | `{page: {...}}` | Toggle full-width layout |
 | `PUT` | `/collectives/{cId}/pages/{id}/subpageOrder` | `{subpageOrder}` | `{page: {...}}` | Set child page ordering |
-| `GET` | `/collectives/{cId}/pages/{id}/touch` | — | `{page: {...}}` | Bump timestamp without changing content |
-| `PUT` | `/collectives/{cId}/pages/{id}/to/{newCollectiveId}` | — | — | Cross-collective move |
+| `GET` | `/collectives/{cId}/pages/{id}/touch` | — | `{page: {...}}` | Bump timestamp without changing content. **Method is GET despite mutating** |
+| `PUT` | `/collectives/{cId}/pages/{id}/to/{newCollectiveId}` | `{parentId?, index?, copy?}` | *(empty)* | Cross-collective move **or copy** — `copy: true` duplicates. Returns no page data; re-list the destination |
 
 ## Page Trash
 
@@ -83,7 +86,7 @@ All paths are relative to `/ocs/v2.php/apps/collectives/api/v1.0`. All requests 
 | Method | Path | Body | Returns | Notes |
 |--------|------|------|---------|-------|
 | `GET` | `/collectives/{cId}/pages/templates` | — | `{templates: [...]}` | **Under `/pages/templates`**, not `/templates` |
-| `POST` | `/collectives/{cId}/pages/templates/{id}` | `{title, parentId}` | `{template: {...}}` | `{id}` semantics unclear for POST — may need template root page |
+| `POST` | `/collectives/{cId}/pages/templates/{id}` | `{title, parentId}` | `{template: {...}}` | `parentId` is **required in the body** as well as the path — sending only `{title}` fails validation |
 | `PUT` | `/collectives/{cId}/pages/templates/{id}` | `{title}` | `{template: {...}}` | Rename |
 | `PUT` | `/collectives/{cId}/pages/templates/{id}/emoji` | `{emoji}` | `{template: {...}}` | |
 | `DELETE` | `/collectives/{cId}/pages/templates/{id}` | — | — | |
@@ -111,13 +114,15 @@ All paths are relative to `/ocs/v2.php/apps/collectives/api/v1.0`. All requests 
 
 | Method | Path | Body | Returns | Notes |
 |--------|------|------|---------|-------|
-| `GET` | `/collectives/{cId}/shares` | — | shares array | List collective shares |
-| `POST` | `/collectives/{cId}/shares` | `{password?}` | `{share: {...}}` | Create public share link |
-| `PUT` | `/collectives/{cId}/shares/{token}` | `{editable, password?}` | `{share: {...}}` | |
+| `GET` | `/collectives/{cId}/shares` | — | `[...]` | Lists **both** collective and page shares. `ocs.data` is a **bare array**, not `{shares: [...]}` |
+| `POST` | `/collectives/{cId}/shares` | `{password?}` | share object | Create public share link. `ocs.data` **is the share itself**, not `{share: {...}}` |
+| `PUT` | `/collectives/{cId}/shares/{token}` | `{editable*, password?}` | share object | `editable` is **required** — it is always applied |
 | `DELETE` | `/collectives/{cId}/shares/{token}` | — | — | |
-| `POST` | `/collectives/{cId}/pages/{pId}/shares` | `{password?}` | `{share: {...}}` | Page-level share |
-| `PUT` | `/collectives/{cId}/pages/{pId}/shares/{token}` | `{editable, password?}` | `{share: {...}}` | |
+| `POST` | `/collectives/{cId}/pages/{pId}/shares` | `{password?}` | share object | Page-level share |
+| `PUT` | `/collectives/{cId}/pages/{pId}/shares/{token}` | `{editable*, password?}` | share object | |
 | `DELETE` | `/collectives/{cId}/pages/{pId}/shares/{token}` | — | — | |
+
+Share objects use one shape for both kinds (`CollectiveShare`): `{id, collectiveId, pageId, token, owner, editable, password}`. `pageId` is 0 for a collective-wide share. **The response echoes `password` back** — redact it before it reaches a client.
 
 ## What MUST use WebDAV (no OCS equivalent)
 

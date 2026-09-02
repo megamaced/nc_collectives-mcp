@@ -1,6 +1,6 @@
 # collectives-mcp
 
-A [Model Context Protocol](https://modelcontextprotocol.io) server for [Nextcloud Collectives](https://github.com/nextcloud/collectives) — exposes collectives, pages, tags, attachments, page history, and trash to Claude and any MCP-compatible client.
+A [Model Context Protocol](https://modelcontextprotocol.io) server for [Nextcloud Collectives](https://github.com/nextcloud/collectives) — exposes collectives, pages, tags, attachments, templates, public shares, page history, and trash to Claude and any MCP-compatible client.
 
 ## How it works
 
@@ -8,22 +8,26 @@ The server uses two Nextcloud APIs, verified against the [Collectives OpenAPI sp
 
 | Layer | Used for |
 | --- | --- |
-| OCS API (`/ocs/v2.php/apps/collectives/api/v1.0/...`) | All CRUD operations: collectives, pages, tags, attachments, trash, templates, search, favorites |
-| WebDAV (`/remote.php/dav/files/{user}/...`) | Page body read/write (no OCS equivalent), attachment upload, file version history |
+| OCS API (`/ocs/v2.php/apps/collectives/api/v1.0/...`) | All structured operations: collectives, pages, tags, attachments, shares, settings, trash, templates, search, favorites |
+| WebDAV (`/remote.php/dav/files/{user}/...`) | Page and template body read/write (no OCS equivalent), attachment upload/download, file version history |
 
 The OCS API handles structured operations and returns typed JSON. WebDAV is used only where OCS has no equivalent — primarily reading and writing page markdown content.
 
-## Tools exposed (41)
+## Tools exposed (57)
 
-- **Collectives:** `list_collectives`, `create_collective`, `update_collective`, `delete_collective`
+- **Collectives:** `list_collectives`, `create_collective`, `update_collective`, `delete_collective`, `set_page_mode`, `set_user_settings`
 - **Collective trash:** `list_trashed_collectives`, `restore_trashed_collective`, `permanently_delete_collective`
-- **Pages:** `list_pages`, `get_page`, `create_page`, `update_page`, `delete_page`, `rename_page`, `move_page`, `copy_page`, `set_page_emoji`, `set_page_tags`, `favorite_page`, `unfavorite_page`
+- **Pages:** `list_pages`, `get_page`, `create_page`, `update_page`, `delete_page`, `rename_page`, `move_page`, `move_page_to_collective`, `copy_page`, `set_page_emoji`, `set_page_tags`, `favorite_page`, `unfavorite_page`
+- **Page layout & ordering:** `set_page_full_width`, `set_subpage_order`, `touch_page`
 - **Tags:** `list_tags`, `create_tag`, `update_tag`, `delete_tag`
 - **Trash & history:** `list_trashed_pages`, `restore_page`, `purge_page`, `list_page_versions`, `restore_page_version`, `list_recent_pages`
-- **Templates:** `list_templates`, `create_template`, `update_template`, `set_template_emoji`, `delete_template`
+- **Templates:** `list_templates`, `create_template`, `update_template`, `get_template`, `update_template_content`, `set_template_emoji`, `delete_template`
 - **Search:** `search`, `search_in_collective`
-- **Attachments:** `list_attachments`, `upload_attachment`, `delete_attachment`
+- **Attachments:** `list_attachments`, `get_attachment`, `upload_attachment`, `rename_attachment`, `delete_attachment`, `restore_attachment`
+- **Public shares:** `list_shares`, `create_collective_share`, `create_page_share`, `update_share`, `delete_share`
 - **Other:** `ping`, `get_backlinks`
+
+Every tool declares MCP annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`), so clients can distinguish a read from an irreversible delete without parsing descriptions.
 
 ## Install
 

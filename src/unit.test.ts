@@ -2,9 +2,9 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
-import { normalizeColor } from './api.js';
+import { normalizeColor, PAGE_MODES, PAGE_ORDERS } from './api.js';
 import { canonicalizeBaseUrl, DEFAULT_TIMEOUT_MS, loadConfig } from './config.js';
-import { encodeAttachmentFilename, TOOLS } from './tools.js';
+import { dispatchTool, encodeAttachmentFilename, TOOLS } from './tools.js';
 import { VERSION } from './version.js';
 
 /**
@@ -120,5 +120,99 @@ describe('Server identity', () => {
   test('advertised version matches package.json', () => {
     const pkg = createRequire(import.meta.url)('../package.json') as { version: string };
     assert.equal(VERSION, pkg.version);
+  });
+});
+
+describe('Setting enums (pure)', () => {
+  test('page modes match the values the API expects', () => {
+    assert.deepEqual(PAGE_MODES, { view: 0, edit: 1 });
+  });
+
+  test('page orders match the documented userSettings values', () => {
+    assert.deepEqual(PAGE_ORDERS, {
+      byOrder: 0,
+      byTimeAsc: 1,
+      byTitleAsc: 2,
+      byTimeDesc: 3,
+      byTitleDesc: 4,
+    });
+  });
+});
+
+describe('Tool registry shape', () => {
+  test('tool names are unique and match their registry keys', () => {
+    const names = TOOLS.map((t) => t.name);
+    assert.equal(new Set(names).size, names.length, 'no duplicate tool names');
+  });
+
+  test('every tool declares an object input schema with additionalProperties false', () => {
+    for (const tool of TOOLS) {
+      assert.equal(tool.inputSchema.type, 'object', `${tool.name} schema type`);
+      assert.equal(
+        tool.inputSchema.additionalProperties,
+        false,
+        `${tool.name} rejects unknown properties`,
+      );
+    }
+  });
+
+  test('every required property is actually declared in the schema', () => {
+    for (const tool of TOOLS) {
+      const props = Object.keys(tool.inputSchema.properties ?? {});
+      for (const req of tool.inputSchema.required ?? []) {
+        assert.ok(props.includes(req), `${tool.name} declares required property "${req}"`);
+      }
+    }
+  });
+
+  test('every tool has a description', () => {
+    for (const tool of TOOLS) {
+      assert.ok((tool.description ?? '').trim().length > 0, `${tool.name} is described`);
+    }
+  });
+});
+
+describe('Argument validation (pure)', () => {
+  const ctx = { client: null as never, configSummary: 'unused' };
+
+  /** Narrow a CallToolResult's first block to its text, which these all are. */
+  const errorText = (res: Awaited<ReturnType<typeof dispatchTool>>): string => {
+    const block = res.content?.[0];
+    return block && block.type === 'text' ? block.text : '';
+  };
+
+  test('unknown tool names are reported, not thrown', async () => {
+    const res = await dispatchTool('no_such_tool', {}, ctx);
+    assert.equal(res.isError, true);
+    assert.match(errorText(res), /Unknown tool/);
+  });
+
+  test('set_user_settings requires at least one field to change', async () => {
+    const res = await dispatchTool('set_user_settings', { collectiveId: 1 }, ctx);
+    assert.equal(res.isError, true);
+    assert.match(errorText(res), /at least one of pageOrder/);
+  });
+
+  test('set_user_settings rejects an unknown page order', async () => {
+    const res = await dispatchTool('set_user_settings', { collectiveId: 1, pageOrder: 'sideways' }, ctx);
+    assert.equal(res.isError, true);
+    assert.match(errorText(res), /pageOrder/);
+  });
+
+  test('set_page_mode rejects a mode outside view/edit', async () => {
+    const res = await dispatchTool('set_page_mode', { collectiveId: 1, mode: 'readonly' }, ctx);
+    assert.equal(res.isError, true);
+    assert.match(errorText(res), /mode/);
+  });
+
+  test('unknown arguments are rejected rather than ignored', async () => {
+    const res = await dispatchTool('touch_page', { collectiveId: 1, pageId: 2, oops: true }, ctx);
+    assert.equal(res.isError, true);
+  });
+
+  test('create_tag still rejects a malformed colour through dispatch', async () => {
+    const res = await dispatchTool('create_tag', { collectiveId: 1, name: 'x', color: 'red' }, ctx);
+    assert.equal(res.isError, true);
+    assert.match(errorText(res), /six hexadecimal digits/);
   });
 });
