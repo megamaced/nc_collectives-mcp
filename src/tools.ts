@@ -69,9 +69,29 @@ function textResult(text: string): CallToolResult {
   return { content: [{ type: 'text', text }] };
 }
 
-/** Add a markdown-reference `relativePath` to each attachment for convenience. */
+/**
+ * Encode an attachment filename for use inside a URL path segment, matching
+ * the encoder the Collectives editor uses (`src/util/attachmentFilename.ts`),
+ * which additionally escapes the `!'()*` that `encodeURIComponent` leaves bare.
+ */
+export function encodeAttachmentFilename(filename: string): string {
+  return encodeURIComponent(filename).replace(
+    /[!'()*]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+}
+
+/**
+ * Add a `relativePath` to each attachment for convenience. The path is
+ * percent-encoded so it can be dropped straight into a markdown link
+ * destination — a raw name containing a space, `#`, or `)` would otherwise
+ * truncate the link or be read as a URL fragment.
+ */
 function withRelativePath(att: PageAttachment, pageId: number): PageAttachment & { relativePath: string } {
-  return { ...att, relativePath: `.attachments.${pageId}/${att.name}` };
+  return {
+    ...att,
+    relativePath: `.attachments.${pageId}/${encodeAttachmentFilename(att.name)}`,
+  };
 }
 
 // -----------------------------------------------------------------------------
@@ -85,6 +105,13 @@ const ping: ToolDef<typeof Empty> = {
     description:
       'Verify connectivity to the configured Nextcloud instance and report how many collectives are visible.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    annotations: {
+      title: 'Check connection',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   handler: async (_args, ctx) => {
     const collectives = await listCollectives(ctx.client);
@@ -105,6 +132,13 @@ const listCollectivesTool: ToolDef<typeof Empty> = {
     description:
       'List all Collectives the authenticated user has access to. Returns id, name, slug, emoji, and permission levels.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    annotations: {
+      title: 'List Collectives',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   handler: async (_args, ctx) => jsonResult(await listCollectives(ctx.client)),
 };
@@ -130,6 +164,13 @@ const createCollectiveTool: ToolDef<typeof CreateCollectiveArgs> = {
       },
       required: ['name'],
       additionalProperties: false,
+    },
+    annotations: {
+      title: 'Create Collective',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
     },
   },
   handler: async (args, ctx) => jsonResult(await createCollective(ctx.client, args)),
@@ -168,6 +209,13 @@ const updateCollectiveTool: ToolDef<typeof UpdateCollectiveArgs> = {
       required: ['id'],
       additionalProperties: false,
     },
+    annotations: {
+      title: 'Update Collective',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   handler: async (args, ctx) => {
     const { id, ...patch } = args;
@@ -195,6 +243,13 @@ const deleteCollectiveTool: ToolDef<typeof DeleteCollectiveArgs> = {
       required: ['id'],
       additionalProperties: false,
     },
+    annotations: {
+      title: 'Trash Collective',
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   handler: async (args, ctx) => {
     await deleteCollective(ctx.client, args.id);
@@ -213,6 +268,13 @@ const listTrashedCollectivesTool: ToolDef<typeof Empty> = {
     description:
       'List Collectives that have been soft-deleted. These can be restored or permanently deleted.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    annotations: {
+      title: 'List trashed Collectives',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   handler: async (_args, ctx) => jsonResult(await listTrashedCollectives(ctx.client)),
 };
@@ -231,6 +293,13 @@ const restoreTrashedCollectiveTool: ToolDef<typeof RestoreTrashedCollectiveArgs>
       properties: { id: { type: 'integer', description: 'Collective id from list_trashed_collectives.' } },
       required: ['id'],
       additionalProperties: false,
+    },
+    annotations: {
+      title: 'Restore Collective',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
     },
   },
   handler: async (args, ctx) =>
@@ -258,6 +327,13 @@ const permanentlyDeleteCollectiveTool: ToolDef<typeof PermanentlyDeleteCollectiv
       },
       required: ['id'],
       additionalProperties: false,
+    },
+    annotations: {
+      title: 'Permanently delete Collective',
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
     },
   },
   handler: async (args, ctx) => {
@@ -290,6 +366,13 @@ const listPagesTool: ToolDef<typeof ListPagesArgs> = {
       required: ['collectiveId'],
       additionalProperties: false,
     },
+    annotations: {
+      title: 'List pages',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   handler: async (args, ctx) => jsonResult(await listPages(ctx.client, args.collectiveId)),
 };
@@ -315,6 +398,13 @@ const getPageTool: ToolDef<typeof GetPageArgs> = {
       },
       required: ['collectiveId', 'pageId'],
       additionalProperties: false,
+    },
+    annotations: {
+      title: 'Read page',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
     },
   },
   handler: async (args, ctx) => {
@@ -369,6 +459,13 @@ const searchTool: ToolDef<typeof SearchArgs> = {
       required: ['query'],
       additionalProperties: false,
     },
+    annotations: {
+      title: 'Search all Collectives',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   handler: async (args, ctx) =>
     jsonResult(await searchPages(ctx.client, args.query, args.limit)),
@@ -395,6 +492,13 @@ const searchInCollectiveTool: ToolDef<typeof SearchInCollectiveArgs> = {
       },
       required: ['collectiveId', 'query'],
       additionalProperties: false,
+    },
+    annotations: {
+      title: 'Search within Collective',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
     },
   },
   handler: async (args, ctx) =>
@@ -438,6 +542,13 @@ const createPageTool: ToolDef<typeof CreatePageArgs> = {
       required: ['collectiveId', 'parentPageId', 'title'],
       additionalProperties: false,
     },
+    annotations: {
+      title: 'Create page',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
   },
   handler: async (args, ctx) => jsonResult(await createPage(ctx.client, args)),
 };
@@ -468,6 +579,13 @@ const updatePageTool: ToolDef<typeof UpdatePageArgs> = {
       required: ['collectiveId', 'pageId', 'body'],
       additionalProperties: false,
     },
+    annotations: {
+      title: 'Write page content',
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
   },
   handler: async (args, ctx) =>
     jsonResult(await updatePage(ctx.client, args.collectiveId, args.pageId, args.body, args.mode)),
@@ -494,6 +612,13 @@ const deletePageTool: ToolDef<typeof DeletePageArgs> = {
       },
       required: ['collectiveId', 'pageId'],
       additionalProperties: false,
+    },
+    annotations: {
+      title: 'Trash page',
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
     },
   },
   handler: async (args, ctx) => {
@@ -525,6 +650,13 @@ const renamePageTool: ToolDef<typeof RenamePageArgs> = {
       required: ['collectiveId', 'pageId', 'newTitle'],
       additionalProperties: false,
     },
+    annotations: {
+      title: 'Rename page',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   handler: async (args, ctx) =>
     jsonResult(await renamePage(ctx.client, args.collectiveId, args.pageId, args.newTitle)),
@@ -553,6 +685,13 @@ const movePageTool: ToolDef<typeof MovePageArgs> = {
       },
       required: ['collectiveId', 'pageId', 'newParentPageId'],
       additionalProperties: false,
+    },
+    annotations: {
+      title: 'Move page',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
     },
   },
   handler: async (args, ctx) =>
@@ -584,6 +723,13 @@ const setPageEmojiTool: ToolDef<typeof SetPageEmojiArgs> = {
       required: ['collectiveId', 'pageId', 'emoji'],
       additionalProperties: false,
     },
+    annotations: {
+      title: 'Set page emoji',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   handler: async (args, ctx) =>
     jsonResult(await setPageEmoji(ctx.client, args.collectiveId, args.pageId, args.emoji)),
@@ -613,6 +759,13 @@ const copyPageTool: ToolDef<typeof CopyPageArgs> = {
       required: ['collectiveId', 'pageId'],
       additionalProperties: false,
     },
+    annotations: {
+      title: 'Copy page',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
   },
   handler: async (args, ctx) =>
     jsonResult(await copyPage(ctx.client, args.collectiveId, args.pageId, args.newTitle)),
@@ -636,6 +789,13 @@ const favoritePageTool: ToolDef<typeof PageRefArgs> = {
       required: ['collectiveId', 'pageId'],
       additionalProperties: false,
     },
+    annotations: {
+      title: 'Favorite page',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   handler: async (args, ctx) => {
     await favoritePage(ctx.client, args.collectiveId, args.pageId);
@@ -653,6 +813,13 @@ const unfavoritePageTool: ToolDef<typeof PageRefArgs> = {
       properties: { collectiveId: { type: 'integer' }, pageId: { type: 'integer' } },
       required: ['collectiveId', 'pageId'],
       additionalProperties: false,
+    },
+    annotations: {
+      title: 'Unfavorite page',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
     },
   },
   handler: async (args, ctx) => {
@@ -682,15 +849,30 @@ const listTagsTool: ToolDef<typeof ListTagsArgs> = {
       required: ['collectiveId'],
       additionalProperties: false,
     },
+    annotations: {
+      title: 'List tags',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   handler: async (args, ctx) => jsonResult(await listTags(ctx.client, args.collectiveId)),
 };
+
+const HexColor = z
+  .string()
+  .trim()
+  .regex(
+    /^#?[0-9a-fA-F]{6}$/,
+    'color must be exactly six hexadecimal digits, optionally prefixed with "#" (e.g. "#2d7d46")',
+  );
 
 const CreateTagArgs = z
   .object({
     collectiveId: z.coerce.number().int().positive(),
     name: z.string().min(1),
-    color: z.string().min(1),
+    color: HexColor,
   })
   .strict();
 
@@ -704,10 +886,20 @@ const createTagTool: ToolDef<typeof CreateTagArgs> = {
       properties: {
         collectiveId: { type: 'integer' },
         name: { type: 'string', description: 'Tag name.' },
-        color: { type: 'string', description: 'Hex color code, e.g. "#FF0000".' },
+        color: {
+          type: 'string',
+          description: 'Six-digit hex color code, with or without "#" (e.g. "#FF0000" or "FF0000").',
+        },
       },
       required: ['collectiveId', 'name', 'color'],
       additionalProperties: false,
+    },
+    annotations: {
+      title: 'Create tag',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
     },
   },
   handler: async (args, ctx) =>
@@ -719,7 +911,7 @@ const UpdateTagArgs = z
     collectiveId: z.coerce.number().int().positive(),
     tagId: z.coerce.number().int().positive(),
     name: z.string().min(1),
-    color: z.string().min(1),
+    color: HexColor,
   })
   .strict();
 
@@ -734,10 +926,20 @@ const updateTagTool: ToolDef<typeof UpdateTagArgs> = {
         collectiveId: { type: 'integer' },
         tagId: { type: 'integer', description: 'Tag id from list_tags.' },
         name: { type: 'string' },
-        color: { type: 'string', description: 'Hex color code.' },
+        color: {
+          type: 'string',
+          description: 'Six-digit hex color code, with or without "#" (e.g. "#FF0000" or "FF0000").',
+        },
       },
       required: ['collectiveId', 'tagId', 'name', 'color'],
       additionalProperties: false,
+    },
+    annotations: {
+      title: 'Update tag',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
     },
   },
   handler: async (args, ctx) =>
@@ -764,6 +966,13 @@ const deleteTagTool: ToolDef<typeof DeleteTagArgs> = {
       },
       required: ['collectiveId', 'tagId'],
       additionalProperties: false,
+    },
+    annotations: {
+      title: 'Delete tag',
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
     },
   },
   handler: async (args, ctx) => {
@@ -800,6 +1009,13 @@ const setPageTagsTool: ToolDef<typeof SetPageTagsArgs> = {
       required: ['collectiveId', 'pageId', 'tagIds'],
       additionalProperties: false,
     },
+    annotations: {
+      title: 'Set page tags',
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   handler: async (args, ctx) =>
     jsonResult(await setPageTags(ctx.client, args.collectiveId, args.pageId, args.tagIds)),
@@ -823,6 +1039,13 @@ const listTrashedPagesTool: ToolDef<typeof ListPagesArgs> = {
       required: ['collectiveId'],
       additionalProperties: false,
     },
+    annotations: {
+      title: 'List trashed pages',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   handler: async (args, ctx) => jsonResult(await listTrashedPages(ctx.client, args.collectiveId)),
 };
@@ -837,6 +1060,13 @@ const restorePageTool: ToolDef<typeof PageRefArgs> = {
       properties: { collectiveId: { type: 'integer' }, pageId: { type: 'integer' } },
       required: ['collectiveId', 'pageId'],
       additionalProperties: false,
+    },
+    annotations: {
+      title: 'Restore page',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
     },
   },
   handler: async (args, ctx) =>
@@ -854,6 +1084,13 @@ const purgePageTool: ToolDef<typeof PageRefArgs> = {
       properties: { collectiveId: { type: 'integer' }, pageId: { type: 'integer' } },
       required: ['collectiveId', 'pageId'],
       additionalProperties: false,
+    },
+    annotations: {
+      title: 'Permanently delete page',
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
     },
   },
   handler: async (args, ctx) => {
@@ -877,6 +1114,13 @@ const listPageVersionsTool: ToolDef<typeof PageRefArgs> = {
       properties: { collectiveId: { type: 'integer' }, pageId: { type: 'integer' } },
       required: ['collectiveId', 'pageId'],
       additionalProperties: false,
+    },
+    annotations: {
+      title: 'List page versions',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
     },
   },
   handler: async (args, ctx) =>
@@ -906,6 +1150,13 @@ const restorePageVersionTool: ToolDef<typeof RestorePageVersionArgs> = {
       },
       required: ['collectiveId', 'pageId', 'versionId'],
       additionalProperties: false,
+    },
+    annotations: {
+      title: 'Restore page version',
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
     },
   },
   handler: async (args, ctx) =>
@@ -939,6 +1190,13 @@ const listRecentPagesTool: ToolDef<typeof ListRecentPagesArgs> = {
       required: ['collectiveId'],
       additionalProperties: false,
     },
+    annotations: {
+      title: 'List recent pages',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   handler: async (args, ctx) =>
     jsonResult(await listRecentPages(ctx.client, args.collectiveId, args.limit)),
@@ -955,6 +1213,13 @@ const getBacklinksTool: ToolDef<typeof PageRefArgs> = {
       properties: { collectiveId: { type: 'integer' }, pageId: { type: 'integer' } },
       required: ['collectiveId', 'pageId'],
       additionalProperties: false,
+    },
+    annotations: {
+      title: 'List backlinks',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
     },
   },
   handler: async (args, ctx) =>
@@ -977,6 +1242,13 @@ const listAttachmentsTool: ToolDef<typeof PageRefArgs> = {
       required: ['collectiveId', 'pageId'],
       additionalProperties: false,
     },
+    annotations: {
+      title: 'List attachments',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   handler: async (args, ctx) => {
     const attachments = await listAttachments(ctx.client, args.collectiveId, args.pageId);
@@ -984,12 +1256,48 @@ const listAttachmentsTool: ToolDef<typeof PageRefArgs> = {
   },
 };
 
+/**
+ * MIME types whose payload is text, so `content` is taken as literal UTF-8.
+ * Anything else defaults to base64. The `+json` / `+xml` structured suffixes
+ * and `image/svg+xml` matter here: they are textual despite not being `text/*`,
+ * and guessing binary for them silently truncated the upload to whatever the
+ * base64 decoder made of the raw characters.
+ */
+function isTextualMimeType(contentType: string): boolean {
+  const type = contentType.split(';')[0]!.trim().toLowerCase();
+  if (type.startsWith('text/')) return true;
+  if (/\+(json|xml)$/.test(type)) return true;
+  return [
+    'application/json',
+    'application/xml',
+    'application/javascript',
+    'application/ecmascript',
+    'application/x-yaml',
+    'application/yaml',
+    'application/sql',
+    'application/graphql',
+  ].includes(type);
+}
+
+/** Strict base64: Node's decoder silently discards anything it cannot parse. */
+function decodeBase64Strict(content: string): Buffer {
+  const compact = content.replace(/\s+/g, '');
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(compact) || compact.length % 4 !== 0) {
+    throw new Error(
+      'content is not valid base64. Pass encoding: "utf8" for text payloads, ' +
+        'or supply properly padded base64 for binary ones.',
+    );
+  }
+  return Buffer.from(compact, 'base64');
+}
+
 const UploadAttachmentArgs = z
   .object({
     collectiveId: z.coerce.number().int().positive(),
     pageId: z.coerce.number().int().positive(),
     filename: z.string().min(1),
     content: z.string(),
+    encoding: z.enum(['utf8', 'base64']).optional(),
     contentType: z.string().optional(),
   })
   .strict();
@@ -999,7 +1307,7 @@ const uploadAttachmentTool: ToolDef<typeof UploadAttachmentArgs> = {
   tool: {
     name: 'upload_attachment',
     description:
-      'Upload an attachment to a page. Creates the attachment directory if needed. Returns the relative path to use in markdown (e.g. `![alt](.attachments.{pageId}/filename.png)`).',
+      'Upload an attachment to a page. Creates the attachment directory if needed. Returns a percent-encoded `relativePath` ready to paste into markdown (e.g. `![alt](.attachments.{pageId}/filename.png)`).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1008,17 +1316,35 @@ const uploadAttachmentTool: ToolDef<typeof UploadAttachmentArgs> = {
         filename: { type: 'string', description: 'Filename for the attachment.' },
         content: {
           type: 'string',
-          description: 'File content as a UTF-8 string (for text) or base64-encoded string (for binary; set contentType accordingly).',
+          description: 'File content, interpreted according to `encoding`.',
+        },
+        encoding: {
+          type: 'string',
+          enum: ['utf8', 'base64'],
+          description:
+            'How `content` is encoded. Set this explicitly for binary files. ' +
+            'If omitted it is inferred from contentType: textual types (text/*, application/json, ' +
+            'image/svg+xml, */*+json, */*+xml) are read as utf8, everything else as base64. ' +
+            'A missing contentType is treated as utf8.',
         },
         contentType: { type: 'string', description: 'MIME type (e.g. "image/png", "text/plain"). Defaults to application/octet-stream.' },
       },
       required: ['collectiveId', 'pageId', 'filename', 'content'],
       additionalProperties: false,
     },
+    annotations: {
+      title: 'Upload attachment',
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   handler: async (args, ctx) => {
-    const isText = !args.contentType || args.contentType.startsWith('text/');
-    const content = isText ? args.content : Buffer.from(args.content, 'base64');
+    const encoding =
+      args.encoding ??
+      (!args.contentType || isTextualMimeType(args.contentType) ? 'utf8' : 'base64');
+    const content = encoding === 'utf8' ? args.content : decodeBase64Strict(args.content);
     const result = await uploadAttachment(
       ctx.client,
       args.collectiveId,
@@ -1054,6 +1380,13 @@ const deleteAttachmentTool: ToolDef<typeof DeleteAttachmentArgs> = {
       required: ['collectiveId', 'pageId', 'filename'],
       additionalProperties: false,
     },
+    annotations: {
+      title: 'Delete attachment',
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   handler: async (args, ctx) => {
     await deleteAttachment(ctx.client, args.collectiveId, args.pageId, args.filename);
@@ -1079,6 +1412,13 @@ const listTemplatesTool: ToolDef<typeof ListTemplatesArgs> = {
       properties: { collectiveId: { type: 'integer' } },
       required: ['collectiveId'],
       additionalProperties: false,
+    },
+    annotations: {
+      title: 'List templates',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
     },
   },
   handler: async (args, ctx) => jsonResult(await listTemplates(ctx.client, args.collectiveId)),
@@ -1106,6 +1446,13 @@ const createTemplateTool: ToolDef<typeof CreateTemplateArgs> = {
       },
       required: ['collectiveId', 'title', 'parentId'],
       additionalProperties: false,
+    },
+    annotations: {
+      title: 'Create template',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
     },
   },
   handler: async (args, ctx) =>
@@ -1135,6 +1482,13 @@ const updateTemplateTool: ToolDef<typeof UpdateTemplateArgs> = {
       required: ['collectiveId', 'templateId', 'title'],
       additionalProperties: false,
     },
+    annotations: {
+      title: 'Rename template',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   handler: async (args, ctx) =>
     jsonResult(await updateTemplate(ctx.client, args.collectiveId, args.templateId, args.title)),
@@ -1163,6 +1517,13 @@ const setTemplateEmojiTool: ToolDef<typeof SetTemplateEmojiArgs> = {
       required: ['collectiveId', 'templateId', 'emoji'],
       additionalProperties: false,
     },
+    annotations: {
+      title: 'Set template emoji',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
   },
   handler: async (args, ctx) =>
     jsonResult(await setTemplateEmoji(ctx.client, args.collectiveId, args.templateId, args.emoji)),
@@ -1188,6 +1549,13 @@ const deleteTemplateTool: ToolDef<typeof DeleteTemplateArgs> = {
       },
       required: ['collectiveId', 'templateId'],
       additionalProperties: false,
+    },
+    annotations: {
+      title: 'Delete template',
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
     },
   },
   handler: async (args, ctx) => {
