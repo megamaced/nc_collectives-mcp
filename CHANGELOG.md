@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.4.1 — Dependency updates and a boolean coercion fix
+
+### Bug Fixes
+
+- **The string `"false"` was read as `true` in every boolean argument.** `z.coerce.boolean()` is `Boolean(value)`, so any non-empty string coerces to true. The repo uses `z.coerce.*` deliberately because MCP clients may serialise scalars as strings, which made this reachable rather than theoretical.
+
+  Five arguments were affected, and one matters beyond a confusing result: **`update_share.editable`** — a client sending `"false"` to disable public editing would have enabled it, publishing write access to a share link. `move_page_to_collective.copy` was the other sharp edge: `"false"` would have copied instead of moved, leaving an unexpected duplicate.
+
+  Booleans now accept real booleans and the exact strings `"true"`/`"false"`; anything else is a validation error rather than a guess. Introduced in v0.4.0.
+
+### Dependencies
+
+Applies every open Dependabot PR (#29–#35) as one changeset, since seven PRs all touching `ci.yml` or the lockfile would have conflicted with each other.
+
+- **CI actions off the deprecated Node 20 runtimes** (#28): `actions/checkout` 4→7, `actions/setup-node` 4→7, `pnpm/action-setup` 4→6.
+- **TypeScript 5.9 → 6.0.** Dependabot could not land this alone — its PR failed with 61 type errors. All 61 had one cause: TS 6 no longer auto-includes every `@types/*` package it finds on disk, so `@types/node` was missing from the program, and without it `assert.ok(x)` loses its `asserts` signature so every narrowed value read as possibly-undefined. Fixed by naming `types: ["node"]` in `tsconfig.json`, which is the better setting anyway — deterministic, and it keeps unrelated global types out of the program.
+- **zod 3 → 4.** A major on a production dependency, so the contract `dispatchTool` relies on was verified rather than assumed: `error.issues[]` still carries `path` and `message`, and `.strict()` still reports unrecognised keys.
+- **`@types/node` 24 → 26**, plus the grouped dev-tooling updates.
+
+`typescript` is capped at `^6.0.3` rather than following the latest to 7.0, because `typescript-eslint` 8.x declares a peer range of `<6.1.0` and 7 breaks linting. Worth revisiting when typescript-eslint supports it.
+
+---
+
 ## v0.4.0 — Shares, cross-Collective moves, and the rest of the v4.4 surface
 
 Closes the feature backlog (#22–#27). The tool count goes from 41 to 57. Every operation was verified against the [v4.4.0 OpenAPI spec](https://github.com/nextcloud/collectives/blob/v4.4.0/openapi.json) before implementation, which turned up three places where `ENDPOINTS.md` was wrong — those are corrected too.
