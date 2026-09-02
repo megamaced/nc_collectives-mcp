@@ -1,5 +1,52 @@
 # Changelog
 
+## v0.4.0 — Shares, cross-Collective moves, and the rest of the v4.4 surface
+
+Closes the feature backlog (#22–#27). The tool count goes from 41 to 57. Every operation was verified against the [v4.4.0 OpenAPI spec](https://github.com/nextcloud/collectives/blob/v4.4.0/openapi.json) before implementation, which turned up three places where `ENDPOINTS.md` was wrong — those are corrected too.
+
+### Public shares (#22)
+
+`list_shares`, `create_collective_share`, `create_page_share`, `update_share`, `delete_share`.
+
+One `CollectiveShare` shape covers both kinds; `scope` in the result says which. **The API echoes share passwords back in its responses** — they are stripped before anything reaches the client, and replaced with a `hasPassword` boolean. `update_share` requires `editable` because the endpoint does: it is applied on every call, so leaving it implicit would silently flip it.
+
+### Cross-Collective moves (#24)
+
+`move_page_to_collective` moves or copies a page (with subpages and attachments) into another Collective, with optional destination parent and index.
+
+The endpoint returns no page data and the page id changes in transit, so the result is located by diffing the destination Collective's page list rather than re-fetching an id that may now 404. Refuses a same-Collective call, pointing at `move_page`/`copy_page` instead, and checks both Collectives are accessible so a typo gives a clear message rather than a bare 404.
+
+### Page layout and ordering (#23)
+
+`set_page_full_width`, `set_subpage_order`, `touch_page`, plus an optional `index` on `move_page` and `copy_page`.
+
+`set_subpage_order` validates the ids against the page's actual children and rejects duplicates before sending. The API takes a JSON-stringified array and accepts nonsense silently, so an unchecked typo would corrupt the stored order with no error.
+
+### Attachment lifecycle (#25)
+
+`get_attachment`, `rename_attachment`, `restore_attachment`.
+
+Downloads state their encoding explicitly and are capped at 5 MB, since the bytes are returned inline through the MCP transport. Every by-name operation resolves the name against the page's real attachment list first, so no caller string is interpolated into a WebDAV path — the same discipline v0.3.0 applied to `delete_attachment`, now shared. `delete_attachment` returns the deleted attachment so its id can be passed to `restore_attachment`; a trashed attachment is absent from `list_attachments`, so there is no name left to resolve.
+
+### Template content (#27)
+
+`get_template` and `update_template_content`.
+
+A template could be created and renamed but never authored, so `create_page(templateId)` could only copy content written through the web UI. Templates are pages on disk, so the write path is shared with `update_page` — including its `If-Match` concurrency handling.
+
+### Collective and user settings (#26)
+
+`set_page_mode` (Collective-wide) and `set_user_settings` (per-user page order and landing-page widgets). The split is deliberate and stated in both descriptions: one changes what every member sees, the other only the calling user.
+
+### Fixes and maintenance
+
+- **`update_tag`'s description did not mention that both `name` and `color` are always applied**, so a caller changing only the colour would blank the name. Found by a new registry test; the description now says to pass the existing value for the field you are not changing.
+- **Dependabot configured** for npm and GitHub Actions. Dependency automation previously ran only against a now-retired Gitea mirror, which is why the SDK sat on 8 high-severity advisories until v0.3.0.
+- **`ENDPOINTS.md` corrected** in three places the spec contradicted: share endpoints are *not* OCS-enveloped (create/update return the share directly, the list returns a bare array), `to/{newCollectiveId}` takes a `{parentId, index, copy}` body rather than none, and template creation requires `parentId` in the body. Also documents that `touch` is a GET that mutates.
+- **12 more unit tests**, covering the setting enums, registry invariants (unique names, declared required properties, `additionalProperties: false`), and argument validation through `dispatchTool`.
+
+---
+
 ## v0.3.0 — Reliability, path safety, and tool metadata
 
 Resolves the open issue backlog (#1–#21): two path-traversal holes, a set of retry/timeout defects in the HTTP layer, several contract mismatches against the Collectives v4.4.0 OpenAPI spec, and the missing MCP tool annotations.
