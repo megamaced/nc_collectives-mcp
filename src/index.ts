@@ -9,6 +9,7 @@ import {
 import { loadConfig } from './config.js';
 import { NextcloudClient } from './http.js';
 import { dispatchTool, TOOLS } from './tools.js';
+import { VERSION } from './version.js';
 
 const config = loadConfig();
 const client = new NextcloudClient(config);
@@ -18,7 +19,7 @@ const ctx = {
 };
 
 const server = new Server(
-  { name: 'collectives-mcp', version: '0.2.1' },
+  { name: 'collectives-mcp', version: VERSION },
   { capabilities: { tools: {} } },
 );
 

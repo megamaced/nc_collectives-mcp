@@ -26,3 +26,9 @@ jobs:
       - run: pnpm typecheck
 
       - run: pnpm build
+
+      # Integration tests self-skip without Nextcloud credentials; the
+      # deterministic unit tests always run.
+      - run: pnpm test
+
+      - run: pnpm audit --prod

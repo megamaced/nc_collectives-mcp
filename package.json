@@ -1,6 +1,6 @@
 {
   "name": "collectives-mcp",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Model Context Protocol server for Nextcloud Collectives",
@@ -15,17 +15,17 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -p tsconfig.build.json",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "lint": "eslint src",
     "typecheck": "tsc --noEmit",
     "test": "node --test --import tsx 'src/**/*.test.ts'",
-    "prepublishOnly": "tsc",
-    "pack:tarball": "tsc && npm pack"
+    "prepublishOnly": "tsc -p tsconfig.build.json",
+    "pack:tarball": "tsc -p tsconfig.build.json && npm pack"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {

@@ -27,10 +27,10 @@ The OCS API handles structured operations and returns typed JSON. WebDAV is used
 
 ## Install
 
-Download `collectives-mcp-0.2.1.tgz` from the [latest release](https://github.com/megamaced/nc_collectives-mcp/releases/latest), then:
+Download the `collectives-mcp-<version>.tgz` asset from the [latest release](https://github.com/megamaced/nc_collectives-mcp/releases/latest), then:
 
 ```bash
-npm install -g ./collectives-mcp-0.2.1.tgz
+npm install -g ./collectives-mcp-<version>.tgz
 ```
 
 This installs the `collectives-mcp` command globally.
@@ -62,11 +62,13 @@ Add to your MCP client config (Claude Code shown):
 ```bash
 pnpm install
 pnpm dev      # stdio MCP server, point mcp inspector at it
-pnpm test     # integration tests against MCP_TEST_COLLECTIVE
+pnpm test     # unit tests, plus integration tests when MCP_TEST_COLLECTIVE_ID is set
 pnpm build    # tsc -> dist/
 ```
 
-Required env vars: `NEXTCLOUD_URL`, `NEXTCLOUD_USER`, `NEXTCLOUD_APP_PASSWORD`. Tests additionally need `MCP_TEST_COLLECTIVE` pointing at a throwaway collective.
+Required env vars: `NEXTCLOUD_URL`, `NEXTCLOUD_USER`, `NEXTCLOUD_APP_PASSWORD`. Optional: `NEXTCLOUD_TIMEOUT_MS` (per-request deadline, default 60000).
+
+The integration tests additionally need `MCP_TEST_COLLECTIVE_ID` set to the numeric id of a throwaway collective. Without it they skip; the deterministic unit tests still run.
 
 ## Disclosure
 
