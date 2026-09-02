@@ -2,6 +2,8 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
+import { z } from 'zod';
+
 import { normalizeColor, PAGE_MODES, PAGE_ORDERS } from './api.js';
 import { canonicalizeBaseUrl, DEFAULT_TIMEOUT_MS, loadConfig } from './config.js';
 import { dispatchTool, encodeAttachmentFilename, TOOLS } from './tools.js';
@@ -214,5 +216,50 @@ describe('Argument validation (pure)', () => {
     const res = await dispatchTool('create_tag', { collectiveId: 1, name: 'x', color: 'red' }, ctx);
     assert.equal(res.isError, true);
     assert.match(errorText(res), /six hexadecimal digits/);
+  });
+});
+
+describe('Boolean argument handling (pure)', () => {
+  const ctx = { client: null as never, configSummary: 'unused' };
+
+  const errText = (res: Awaited<ReturnType<typeof dispatchTool>>): string => {
+    const block = res.content?.[0];
+    return block && block.type === 'text' ? block.text : '';
+  };
+
+  /**
+   * The string "false" must never be read as true. `z.coerce.boolean()` is
+   * `Boolean(value)`, so it would have granted public edit access here.
+   */
+  test('the string "false" is not accepted as true', async () => {
+    // Reaching the client would throw on null; a validation error proves the
+    // value was rejected before any request was attempted.
+    const res = await dispatchTool(
+      'update_share',
+      { collectiveId: 1, token: 'abc', editable: 'FALSE' },
+      ctx,
+    );
+    assert.equal(res.isError, true);
+    assert.match(errText(res), /editable/);
+  });
+
+  test('non-boolean strings are rejected rather than coerced', async () => {
+    for (const value of ['yes', 'no', '1', '0', 'maybe', '']) {
+      const res = await dispatchTool(
+        'set_page_full_width',
+        { collectiveId: 1, pageId: 2, fullWidth: value },
+        ctx,
+      );
+      assert.equal(res.isError, true, `fullWidth: ${JSON.stringify(value)} should be rejected`);
+    }
+  });
+
+  test('real booleans and the exact strings "true"/"false" are accepted', () => {
+    const schema = z.union([z.boolean(), z.enum(['true', 'false']).transform((v) => v === 'true')]);
+    assert.equal(schema.parse(true), true);
+    assert.equal(schema.parse(false), false);
+    assert.equal(schema.parse('true'), true);
+    assert.equal(schema.parse('false'), false);
+    assert.throws(() => schema.parse('False'));
   });
 });

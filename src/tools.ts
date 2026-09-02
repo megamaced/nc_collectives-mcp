@@ -80,6 +80,24 @@ interface ToolDef<S extends ZodTypeAny> {
 
 const Empty = z.object({}).strict();
 
+/**
+ * A boolean argument that tolerates MCP clients which serialise scalars as
+ * strings, without the footgun `z.coerce.boolean()` carries.
+ *
+ * `z.coerce.boolean()` is just `Boolean(value)`, so every non-empty string —
+ * including "false" — becomes `true`. On an argument like `update_share`'s
+ * `editable` that would silently grant public edit access on a share link.
+ * Accept real booleans and the two unambiguous string spellings; reject
+ * anything else so a caller gets an error instead of the opposite of what
+ * they asked for.
+ */
+const Bool = z.union([
+  z.boolean(),
+  z
+    .enum(['true', 'false'])
+    .transform((v) => v === 'true'),
+]);
+
 function jsonResult(data: unknown): CallToolResult {
   return {
     content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
@@ -1588,7 +1606,7 @@ const SetPageFullWidthArgs = z
   .object({
     collectiveId: z.coerce.number().int().positive(),
     pageId: z.coerce.number().int().positive(),
-    fullWidth: z.coerce.boolean(),
+    fullWidth: Bool,
   })
   .strict();
 
@@ -1695,7 +1713,7 @@ const MovePageToCollectiveArgs = z
     newCollectiveId: z.coerce.number().int().positive(),
     parentId: z.coerce.number().int().nonnegative().optional(),
     index: z.coerce.number().int().nonnegative().optional(),
-    copy: z.coerce.boolean().optional(),
+    copy: Bool.optional(),
   })
   .strict();
 
@@ -1866,7 +1884,7 @@ const UpdateShareArgs = z
   .object({
     collectiveId: z.coerce.number().int().positive(),
     token: z.string().min(1),
-    editable: z.coerce.boolean(),
+    editable: Bool,
     pageId: z.coerce.number().int().positive().optional(),
     password: z.string().optional(),
   })
@@ -1999,8 +2017,8 @@ const SetUserSettingsArgs = z
   .object({
     collectiveId: z.coerce.number().int().positive(),
     pageOrder: z.enum(['byOrder', 'byTimeAsc', 'byTitleAsc', 'byTimeDesc', 'byTitleDesc']).optional(),
-    showMembers: z.coerce.boolean().optional(),
-    showRecentPages: z.coerce.boolean().optional(),
+    showMembers: Bool.optional(),
+    showRecentPages: Bool.optional(),
   })
   .strict()
   .refine(
